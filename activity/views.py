@@ -9,6 +9,8 @@ from decimal import Decimal
 from django.apps import apps
 from django.contrib.auth.models import AnonymousUser
 from django.http import HttpResponse, JsonResponse
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -55,6 +57,8 @@ def _get_user(request):
     return user
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def export_ptba(request, ptba_id):
     """Export PTBA to multi-column Excel format with execution data."""
     user = _get_user(request)

@@ -14,6 +14,7 @@ from activity.gql_queries import (
 )
 from activity.gql_mutations import (
     CreatePTBAMutation, UpdatePTBAMutation, DeletePTBAMutation,
+    ApprovePTBAMutation, ClosePTBAMutation,
     CreateComposanteMutation, UpdateComposanteMutation, DeleteComposanteMutation,
     CreateSousComposanteMutation, UpdateSousComposanteMutation, DeleteSousComposanteMutation,
     CreateActiviteMutation, UpdateActiviteMutation, DeleteActiviteMutation,
@@ -27,6 +28,7 @@ from activity.gql_mutations import (
     CreateWeeklyPlanEntryMutation, UpdateWeeklyPlanEntryMutation,
     DeleteWeeklyPlanEntryMutation,
     AllocateFundingRevisedMutation,
+    BeginRevisionMutation, ApproveRevisionMutation, RejectRevisionMutation,
 )
 from activity.dashboard_gql import PTBADashboardType
 from activity.dashboard_service import PTBADashboardService
@@ -89,7 +91,7 @@ class Query(graphene.ObjectType):
         if not user.has_perms(config.gql_dashboard_view_perms):
             raise ValidationError("mutation.authentication_required")
         data = PTBADashboardService.get_overview(ptba_id, quarter, year)
-        return data
+        return PTBADashboardType(**data)
 
 
 class Mutation(graphene.ObjectType):
@@ -128,3 +130,10 @@ class Mutation(graphene.ObjectType):
     delete_weekly_plan_entry = DeleteWeeklyPlanEntryMutation.Field()
 
     allocate_funding_revised = AllocateFundingRevisedMutation.Field()
+
+    approve_ptba = ApprovePTBAMutation.Field()
+    close_ptba = ClosePTBAMutation.Field()
+
+    begin_revision = BeginRevisionMutation.Field()
+    approve_revision = ApproveRevisionMutation.Field()
+    reject_revision = RejectRevisionMutation.Field()

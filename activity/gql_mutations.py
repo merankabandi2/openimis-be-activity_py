@@ -3,6 +3,7 @@ from gettext import gettext as _
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 
 from django.apps import apps
 
@@ -13,8 +14,9 @@ from core.gql.gql_mutations.base_mutation import (
 from core.schema import OpenIMISMutation
 from activity.apps import ActivityConfig
 from activity.models import (
-    PTBA, Composante, SousComposante, Activite, SousActivite,
+    PTBA, PTBAStatus, Composante, SousComposante, Activite, SousActivite,
     FundingSource, SousActiviteFunding, WeeklyPlanEntry,
+    ActivityStatusTransition, RevisionStatus,
 )
 from activity.services import ActivityLifecycleService, QuarterlyExecutionService
 
@@ -698,12 +700,37 @@ class TransitionActivityMutation(BaseMutation):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         activite = Activite.objects.get(id=data['activite_id'])
+        to_status = data['to_status']
         ActivityLifecycleService.transition(
             activite,
-            data['to_status'],
+            to_status,
             user,
             data.get('comment', ''),
         )
+
+        # Send notification on status transition
+        try:
+            from notification.services import NotificationService
+            event_map = {
+                'EN_COURS': 'activity.submitted',
+                'REALISE': 'activity.validated',
+            }
+            event_code = event_map.get(to_status)
+            if event_code:
+                NotificationService.notify(
+                    event_code=event_code,
+                    actor=user,
+                    entity=activite,
+                    entity_url=f'/activity/activite/{activite.id}',
+                    recipients=[],
+                    context={
+                        'activity_type': activite.name,
+                        'new_status': to_status,
+                    },
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger('openIMIS').warning(f"Notification failed: {e}")
 
     class Input(TransitionActivityInputType):
         pass
@@ -974,4 +1001,180 @@ class AllocateFundingRevisedMutation(BaseMutation):
         )
 
     class Input(AllocateFundingRevisedInputType):
+        pass
+
+
+# ---- Approve / Close PTBA mutations ----
+
+class ApprovePTBAInputType(OpenIMISMutation.Input):
+    ptba_id = graphene.UUID(required=True)
+    comment = graphene.String(required=False)
+
+
+class ApprovePTBAMutation(BaseMutation):
+    """Transition PTBA from DRAFT to APPROVED."""
+    _mutation_class = "ApprovePTBAMutation"
+    _mutation_module = ActivityConfig.name
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not user.id or not user.has_perms(
+                get_activity_config().gql_ptba_update_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        data.pop('client_mutation_id', None)
+        data.pop('client_mutation_label', None)
+        ptba = PTBA.objects.get(id=data['ptba_id'])
+        if ptba.status != PTBAStatus.DRAFT:
+            raise ValidationError(
+                _("PTBA must be in DRAFT status to approve. Current status: %(status)s")
+                % {'status': ptba.status}
+            )
+        ptba.status = PTBAStatus.APPROVED
+        ptba.user_updated = user
+        ptba.save()
+
+    class Input(ApprovePTBAInputType):
+        pass
+
+
+class ClosePTBAInputType(OpenIMISMutation.Input):
+    ptba_id = graphene.UUID(required=True)
+    comment = graphene.String(required=False)
+
+
+class ClosePTBAMutation(BaseMutation):
+    """Transition PTBA from ACTIVE to CLOSED."""
+    _mutation_class = "ClosePTBAMutation"
+    _mutation_module = ActivityConfig.name
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not user.id or not user.has_perms(
+                get_activity_config().gql_ptba_update_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        data.pop('client_mutation_id', None)
+        data.pop('client_mutation_label', None)
+        ptba = PTBA.objects.get(id=data['ptba_id'])
+        if ptba.status != PTBAStatus.ACTIVE:
+            raise ValidationError(
+                _("PTBA must be in ACTIVE status to close. Current status: %(status)s")
+                % {'status': ptba.status}
+            )
+        ptba.status = PTBAStatus.CLOSED
+        ptba.user_updated = user
+        ptba.save()
+
+    class Input(ClosePTBAInputType):
+        pass
+
+
+# ---- Revision workflow mutations for SousActivite ----
+
+class BeginRevisionInputType(OpenIMISMutation.Input):
+    sous_activite_id = graphene.UUID(required=True)
+
+
+class BeginRevisionMutation(BaseMutation):
+    """Begin a revision: snapshot current values into *_initial fields."""
+    _mutation_class = "BeginRevisionMutation"
+    _mutation_module = ActivityConfig.name
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not user.id or not user.has_perms(
+                get_activity_config().gql_activity_update_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        data.pop('client_mutation_id', None)
+        data.pop('client_mutation_label', None)
+        sa = SousActivite.objects.get(id=data['sous_activite_id'])
+        sa.quantity_initial = sa.quantity_total
+        sa.unit_cost_initial = sa.unit_cost
+        sa.budget_initial = sa.budget_total
+        sa.revision_status = 'REVISE'
+        sa.save()
+
+    class Input(BeginRevisionInputType):
+        pass
+
+
+class ApproveRevisionInputType(OpenIMISMutation.Input):
+    sous_activite_id = graphene.UUID(required=True)
+    comment = graphene.String(required=False)
+
+
+class ApproveRevisionMutation(BaseMutation):
+    """Approve a revision: copy current values to *_revised fields."""
+    _mutation_class = "ApproveRevisionMutation"
+    _mutation_module = ActivityConfig.name
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not user.id or not user.has_perms(
+                get_activity_config().gql_execution_approve_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        data.pop('client_mutation_id', None)
+        data.pop('client_mutation_label', None)
+        sa = SousActivite.objects.get(id=data['sous_activite_id'])
+        if sa.revision_status != 'REVISE':
+            raise ValidationError(
+                _("SousActivite must be in REVISE status to approve revision. "
+                  "Current: %(status)s") % {'status': sa.revision_status}
+            )
+        sa.quantity_revised = sa.quantity_total
+        sa.unit_cost_revised = sa.unit_cost
+        sa.budget_revised = sa.budget_total
+        sa.revision_status = 'INITIAL'
+        sa.revision_comment = data.get('comment', '')
+        sa.save()
+
+    class Input(ApproveRevisionInputType):
+        pass
+
+
+class RejectRevisionInputType(OpenIMISMutation.Input):
+    sous_activite_id = graphene.UUID(required=True)
+    reason = graphene.String(required=False)
+
+
+class RejectRevisionMutation(BaseMutation):
+    """Reject a revision: restore *_initial values back to current."""
+    _mutation_class = "RejectRevisionMutation"
+    _mutation_module = ActivityConfig.name
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not user.id or not user.has_perms(
+                get_activity_config().gql_execution_approve_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        data.pop('client_mutation_id', None)
+        data.pop('client_mutation_label', None)
+        sa = SousActivite.objects.get(id=data['sous_activite_id'])
+        if sa.revision_status != 'REVISE':
+            raise ValidationError(
+                _("SousActivite must be in REVISE status to reject revision. "
+                  "Current: %(status)s") % {'status': sa.revision_status}
+            )
+        sa.quantity_total = sa.quantity_initial
+        sa.unit_cost = sa.unit_cost_initial
+        sa.budget_total = sa.budget_initial
+        sa.revision_status = 'ABANDONNE'
+        sa.revision_comment = data.get('reason', '')
+        sa.save()
+
+    class Input(RejectRevisionInputType):
         pass
