@@ -14,13 +14,15 @@ from activity.gql_queries import (
 )
 from activity.gql_mutations import (
     CreatePTBAMutation, UpdatePTBAMutation, DeletePTBAMutation,
-    ApprovePTBAMutation, ClosePTBAMutation,
+    ApprovePTBAMutation, ClosePTBAMutation, TransitionPTBAMutation,
     CreateComposanteMutation, UpdateComposanteMutation, DeleteComposanteMutation,
     CreateSousComposanteMutation, UpdateSousComposanteMutation, DeleteSousComposanteMutation,
     CreateActiviteMutation, UpdateActiviteMutation, DeleteActiviteMutation,
     CreateSousActiviteMutation, UpdateSousActiviteMutation, DeleteSousActiviteMutation,
     CreateFundingSourceMutation, UpdateFundingSourceMutation,
     AllocateFundingMutation,
+    DeallocateFundingMutation,
+    DeleteFundingSourceMutation,
     TransitionActivityMutation,
     ReportQuarterlyExecutionMutation,
     LinkActivityToIndicatorMutation,
@@ -117,8 +119,10 @@ class Mutation(graphene.ObjectType):
 
     create_funding_source = CreateFundingSourceMutation.Field()
     update_funding_source = UpdateFundingSourceMutation.Field()
+    delete_funding_source = DeleteFundingSourceMutation.Field()
 
     allocate_funding = AllocateFundingMutation.Field()
+    deallocate_funding = DeallocateFundingMutation.Field()
     transition_activity = TransitionActivityMutation.Field()
     report_quarterly_execution = ReportQuarterlyExecutionMutation.Field()
 
@@ -133,6 +137,7 @@ class Mutation(graphene.ObjectType):
 
     approve_ptba = ApprovePTBAMutation.Field()
     close_ptba = ClosePTBAMutation.Field()
+    transition_ptba = TransitionPTBAMutation.Field()
 
     begin_revision = BeginRevisionMutation.Field()
     approve_revision = ApproveRevisionMutation.Field()

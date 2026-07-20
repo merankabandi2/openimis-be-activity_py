@@ -19,6 +19,7 @@ from activity.models import (
     ActivityStatusTransition, RevisionStatus,
 )
 from activity.services import ActivityLifecycleService, QuarterlyExecutionService
+from activity.validation import validate_budget_consistency, validate_funding_allocation
 
 
 def get_activity_config():
@@ -491,7 +492,7 @@ class CreateSousActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutati
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        SousActivite.objects.create(
+        sa = SousActivite(
             activite_id=data['activite_id'],
             code=data.get('code', ''),
             name=data['name'],
@@ -524,6 +525,10 @@ class CreateSousActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutati
             revision_status=data.get('revision_status', 'INITIAL'),
             revision_comment=data.get('revision_comment', ''),
         )
+        error = validate_budget_consistency(sa)
+        if error:
+            raise ValidationError(error)
+        sa.save()
 
     class Input(CreateSousActiviteInputType):
         pass
@@ -555,7 +560,12 @@ class UpdateSousActiviteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutati
             k: v for k, v in data.items()
             if k != 'id' and (v is not None or k in cls.CLEARABLE_FIELDS)
         }
-        sa.update(data=update_data)
+        # Validate the MERGED state (partial updates may omit budget fields)
+        sa.update(data=update_data, save=False)
+        error = validate_budget_consistency(sa)
+        if error:
+            raise ValidationError(error)
+        sa.save()
 
     class Input(UpdateSousActiviteInputType):
         pass
@@ -668,13 +678,79 @@ class AllocateFundingMutation(BaseMutation):
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        SousActiviteFunding.objects.update_or_create(
-            sous_activite_id=data['sous_activite_id'],
-            funding_source_id=data['funding_source_id'],
-            defaults={'amount': data['amount']},
-        )
+        # atomic: the funding-vs-budget invariant is checked on post-write
+        # state, so an over-allocation must roll the write back.
+        with transaction.atomic():
+            SousActiviteFunding.objects.update_or_create(
+                sous_activite_id=data['sous_activite_id'],
+                funding_source_id=data['funding_source_id'],
+                defaults={'amount': data['amount']},
+            )
+            sa = SousActivite.objects.get(id=data['sous_activite_id'])
+            error = validate_funding_allocation(sa)
+            if error:
+                raise ValidationError(error)
 
     class Input(AllocateFundingInputType):
+        pass
+
+
+class DeallocateFundingInputType(OpenIMISMutation.Input):
+    ids = graphene.List(graphene.UUID, required=True)
+
+
+class DeallocateFundingMutation(BaseMutation):
+    _mutation_class = "DeallocateFundingMutation"
+    _mutation_module = ActivityConfig.name
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not user.id or not user.has_perms(
+                get_activity_config().gql_funding_manage_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        data.pop('client_mutation_id', None)
+        data.pop('client_mutation_label', None)
+        SousActiviteFunding.objects.filter(id__in=data['ids']).delete()
+
+    class Input(DeallocateFundingInputType):
+        pass
+
+
+class DeleteFundingSourceInputType(OpenIMISMutation.Input):
+    ids = graphene.List(graphene.UUID, required=True)
+
+
+class DeleteFundingSourceMutation(BaseMutation):
+    _mutation_class = "DeleteFundingSourceMutation"
+    _mutation_module = ActivityConfig.name
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not user.id or not user.has_perms(
+                get_activity_config().gql_funding_manage_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        data.pop('client_mutation_id', None)
+        data.pop('client_mutation_label', None)
+        ids = data['ids']
+        # The FK from SousActiviteFunding is CASCADE — refuse to silently
+        # destroy existing allocations; the user must deallocate first.
+        allocated = FundingSource.objects.filter(
+            id__in=ids, allocations__isnull=False
+        ).distinct()
+        if allocated.exists():
+            codes = ', '.join(allocated.values_list('code', flat=True))
+            raise ValidationError(
+                _("funding_source.delete.has_allocations") + f": {codes}"
+            )
+        FundingSource.objects.filter(id__in=ids).delete()
+
+    class Input(DeleteFundingSourceInputType):
         pass
 
 
@@ -708,21 +784,29 @@ class TransitionActivityMutation(BaseMutation):
             data.get('comment', ''),
         )
 
-        # Send notification on status transition
+        # Send notification on status transition. Recipients are the holders
+        # of the right that gates the NEXT lifecycle step, plus the assigned
+        # approver — an empty list means nobody is ever notified.
         try:
-            from notification.services import NotificationService
+            from notification.services import NotificationService, RecipientResolver
             event_map = {
-                'EN_COURS': 'activity.submitted',
-                'REALISE': 'activity.validated',
+                # to_status: (event code, right gating the next step)
+                'EN_COURS': ('activity.submitted', 170009),   # report execution
+                'REALISE': ('activity.validated', 170010),    # approve / close
             }
-            event_code = event_map.get(to_status)
-            if event_code:
+            mapped = event_map.get(to_status)
+            if mapped:
+                event_code, next_right = mapped
+                recipients = RecipientResolver.merge(
+                    RecipientResolver.by_role(next_right),
+                    RecipientResolver.by_assignment(activite.approved_by),
+                )
                 NotificationService.notify(
                     event_code=event_code,
                     actor=user,
                     entity=activite,
                     entity_url=f'/activity/activite/{activite.id}',
-                    recipients=[],
+                    recipients=recipients,
                     context={
                         'activity_type': activite.name,
                         'new_status': to_status,
@@ -893,7 +977,7 @@ class CreateWeeklyPlanEntryMutation(BaseHistoryModelCreateMutationMixin, BaseMut
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        WeeklyPlanEntry.objects.create(
+        entry = WeeklyPlanEntry(
             sous_activite_id=data['sous_activite_id'],
             week_start=data['week_start'],
             week_end=data['week_end'],
@@ -904,6 +988,9 @@ class CreateWeeklyPlanEntryMutation(BaseHistoryModelCreateMutationMixin, BaseMut
             intervenants=data.get('intervenants', ''),
             created_by=user,
         )
+        # Enforce model invariants (Monday-only week_start, unique week)
+        entry.full_clean()
+        entry.save()
 
     class Input(CreateWeeklyPlanEntryInputType):
         pass
@@ -934,7 +1021,10 @@ class UpdateWeeklyPlanEntryMutation(BaseHistoryModelUpdateMutationMixin, BaseMut
             k: v for k, v in data.items()
             if k != 'id' and (v is not None or k in cls.CLEARABLE_FIELDS)
         }
-        entry.update(data=update_data)
+        # Enforce model invariants on the merged state before saving
+        entry.update(data=update_data, save=False)
+        entry.full_clean()
+        entry.save()
 
     class Input(UpdateWeeklyPlanEntryInputType):
         pass
@@ -994,11 +1084,18 @@ class AllocateFundingRevisedMutation(BaseMutation):
             defaults['amount_initial'] = data['amount_initial']
         if data.get('amount_revised') is not None:
             defaults['amount_revised'] = data['amount_revised']
-        SousActiviteFunding.objects.update_or_create(
-            sous_activite_id=data['sous_activite_id'],
-            funding_source_id=data['funding_source_id'],
-            defaults=defaults,
-        )
+        # atomic: the funding-vs-budget invariant is checked on post-write
+        # state, so an over-allocation must roll the write back.
+        with transaction.atomic():
+            SousActiviteFunding.objects.update_or_create(
+                sous_activite_id=data['sous_activite_id'],
+                funding_source_id=data['funding_source_id'],
+                defaults=defaults,
+            )
+            sa = SousActivite.objects.get(id=data['sous_activite_id'])
+            error = validate_funding_allocation(sa)
+            if error:
+                raise ValidationError(error)
 
     class Input(AllocateFundingRevisedInputType):
         pass
@@ -1071,6 +1168,83 @@ class ClosePTBAMutation(BaseMutation):
         ptba.save()
 
     class Input(ClosePTBAInputType):
+        pass
+
+
+# ---- PTBA state-machine transition ----
+
+# FE dispatches `transitionPtba` (see openimis-fe-activity_js/src/actions.js:149, 879)
+# to move a PTBA between states. Valid transitions mirror the FE
+# PTBA_VALID_TRANSITIONS constant:
+#   DRAFT     -> APPROVED
+#   APPROVED  -> [ACTIVE, DRAFT]
+#   ACTIVE    -> CLOSED
+#   CLOSED    -> (terminal)
+#
+# ApprovePTBAMutation / ClosePTBAMutation still exist as convenience
+# endpoints (DRAFT->APPROVED and ACTIVE->CLOSED respectively). The main
+# value of TransitionPTBAMutation is APPROVED->ACTIVE, which previously
+# had NO backing mutation; the FE Button would dispatch a non-existent
+# `transitionPtba` GQL field and the async mutation would fail silently.
+
+PTBA_VALID_TRANSITIONS = {
+    PTBAStatus.DRAFT: [PTBAStatus.APPROVED],
+    PTBAStatus.APPROVED: [PTBAStatus.ACTIVE, PTBAStatus.DRAFT],
+    PTBAStatus.ACTIVE: [PTBAStatus.CLOSED],
+    PTBAStatus.CLOSED: [],
+}
+
+
+class TransitionPTBAInputType(OpenIMISMutation.Input):
+    ptba_id = graphene.UUID(required=True)
+    to_status = graphene.String(required=True)
+    comment = graphene.String(required=False)
+
+
+class TransitionPTBAMutation(BaseMutation):
+    """Transition a PTBA through its state machine (DRAFT/APPROVED/ACTIVE/CLOSED)."""
+    _mutation_class = "TransitionPTBAMutation"
+    _mutation_module = ActivityConfig.name
+
+    @classmethod
+    def _validate_mutation(cls, user, **data):
+        if type(user) is AnonymousUser or not user.id or not user.has_perms(
+                get_activity_config().gql_ptba_update_perms):
+            raise ValidationError(_("mutation.authentication_required"))
+
+    @classmethod
+    def _mutate(cls, user, **data):
+        data.pop('client_mutation_id', None)
+        data.pop('client_mutation_label', None)
+        ptba = PTBA.objects.get(id=data['ptba_id'])
+        to_status = data['to_status']
+
+        # Validate: to_status is a known PTBAStatus value
+        if to_status not in [s.value for s in PTBAStatus]:
+            raise ValidationError(
+                _("Invalid target PTBA status: %(status)s. Valid: %(choices)s")
+                % {'status': to_status, 'choices': ', '.join(s.value for s in PTBAStatus)}
+            )
+
+        # Validate: from->to transition is allowed per state machine
+        valid_targets = [s.value for s in PTBA_VALID_TRANSITIONS.get(ptba.status, [])]
+        if to_status not in valid_targets:
+            raise ValidationError(
+                _("Cannot transition PTBA from %(from)s to %(to)s. "
+                  "Valid targets: %(valid)s")
+                % {
+                    'from': ptba.status,
+                    'to': to_status,
+                    'valid': ', '.join(valid_targets) if valid_targets else '(terminal state)',
+                }
+            )
+
+        ptba.status = to_status
+        ptba.user_updated = user
+        ptba.save()
+
+
+    class Input(TransitionPTBAInputType):
         pass
 
 

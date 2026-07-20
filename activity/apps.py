@@ -59,13 +59,14 @@ class ActivityConfig(AppConfig):
     gql_funding_manage_perms = None
 
     def ready(self):
-        self.__load_config()
+        from core.models import ModuleConfiguration
+        cfg = ModuleConfiguration.get_or_default(MODULE_NAME, DEFAULT_CONFIG)
+        self.__load_config(cfg)
         # Import signals to register signal handlers
         import activity.signals  # noqa: F401
 
-    def __load_config(self):
+    def __load_config(self, cfg):
         """Load the module configuration including permissions"""
-        cfg = DEFAULT_CONFIG
 
         self.gql_ptba_search_perms = cfg.get("gql_ptba_search_perms", GQL_PTBA_SEARCH_PERMS)
         self.gql_ptba_create_perms = cfg.get("gql_ptba_create_perms", GQL_PTBA_CREATE_PERMS)

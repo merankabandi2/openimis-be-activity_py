@@ -62,12 +62,26 @@ class ActiviteGQLType(DjangoObjectType):
     uuid = graphene.String(source='id')
     budget_total = graphene.Decimal()
 
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        # Annotate once per connection instead of one aggregate per row.
+        from django.db.models import DecimalField, Sum, Value
+        from django.db.models.functions import Coalesce
+        return queryset.annotate(budget_total_agg=Coalesce(
+            Sum('sous_activites__budget_total'),
+            Value(0, output_field=DecimalField(max_digits=18, decimal_places=2)),
+        ))
+
     def resolve_budget_total(self, info):
-        from django.db.models import Sum
-        result = SousActivite.objects.filter(activite=self).aggregate(
-            total=Sum('budget_total')
-        )
-        return result['total'] or 0
+        total = getattr(self, 'budget_total_agg', None)
+        if total is None:
+            # Instance not obtained through the annotated connection queryset
+            # (e.g. nested access) — fall back to the per-instance aggregate.
+            from django.db.models import Sum
+            total = SousActivite.objects.filter(activite=self).aggregate(
+                total=Sum('budget_total')
+            )['total']
+        return total or 0
 
     class Meta:
         model = Activite
