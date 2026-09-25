@@ -5,7 +5,8 @@ import uuid
 from decimal import Decimal
 from unittest import mock
 
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
+from graphene.test import Client
 
 from core.models import Role, RoleRight
 from core.test_helpers import create_test_interactive_user
@@ -39,6 +40,13 @@ def error_text(result):
     if not result:
         return None
     return ' | '.join(f"{e.get('message', '')} {e.get('detail', '')}" for e in result)
+
+
+def run_query(user, query):
+    from openIMIS.schema import schema
+    request = RequestFactory().post('/api/graphql')
+    request.user = user
+    return Client(schema).execute(query, context_value=request)
 
 
 def quarters(sa, prefix):
@@ -218,3 +226,43 @@ class ComposanteQuarterlyDashboardTests(ActivityFixtures):
         q2 = {q['quarter']: q['taux_realisation'] for q in rows['2']['quarterly']}
         self.assertEqual(q1, {1: Decimal('10')})
         self.assertEqual(q2, {1: Decimal('5'), 2: Decimal('10')})
+
+
+class DashboardQueryTests(ActivityFixtures):
+    """DEF-E-04 through the ptbaDashboard field the dashboard page queries."""
+
+    def test_ptba_dashboard_returns_quarters_per_composante(self):
+        _, (sa1,) = self.activity()
+        _, (sa2,) = self.activity(sc=self.sc2)
+        QuarterlyExecutionService.report(sa1, 1, 2026, self.user, resultats_realises=Decimal('1'))
+        QuarterlyExecutionService.report(sa2, 2, 2026, self.user, resultats_realises=Decimal('1'))
+        result = run_query(self.user, '{ ptbaDashboard(ptbaId: "%s") { composantePerformance '
+                                      '{ composanteCode budgetEngage quarterly { quarter tauxRealisation } } } }'
+                           % self.ptba.id)
+        self.assertIsNone(result.get('errors'), result)
+        rows = {r['composanteCode']: r['quarterly'] for r in result['data']['ptbaDashboard']['composantePerformance']}
+        self.assertEqual([q['quarter'] for q in rows['1']], [1])
+        self.assertEqual([q['quarter'] for q in rows['2']], [2])
+
+
+class ActivityPageQueryTests(ActivityFixtures):
+    """ACT-S2 through the activite query of the activity page, for an account
+    holding only PTBA search, activity search and dashboard view."""
+
+    def test_activity_page_reads_indicator_achievements(self):
+        from merankabandi.models import Indicator, IndicatorAchievement
+        from django.apps import apps
+        config = apps.get_app_config('activity')
+        reader = make_user([int(c) for name in ('gql_ptba_search_perms', 'gql_activity_search_perms',
+                                                'gql_dashboard_view_perms') for c in getattr(config, name)])
+        act, _ = self.activity()
+        indicator = Indicator.objects.create(name='UAT indicator', baseline=Decimal('0'), target=Decimal('100'))
+        act.indicators.add(indicator)
+        IndicatorAchievement.objects.create(indicator=indicator, date=datetime.date(2026, 3, 31), achieved=Decimal('12'))
+        result = run_query(reader, '{ activite(id: "%s") { edges { node { id indicators { edges { node '
+                                   '{ id name baseline target achievements { edges { node { achieved date timestamp } } } } } } } } } }'
+                           % act.id)
+        self.assertIsNone(result.get('errors'), result)
+        node = result['data']['activite']['edges'][0]['node']
+        achievements = node['indicators']['edges'][0]['node']['achievements']['edges']
+        self.assertEqual([a['node']['achieved'] for a in achievements], ['12.00'])
