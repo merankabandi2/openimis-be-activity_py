@@ -188,6 +188,8 @@ class PTBADashboardService:
             'sous_activite__activite__sous_composante__composante__code',
         )
 
+        quarterly = cls._get_composante_quarterly(ptba, year)
+
         results = []
         for row in composante_aggs:
             bp = row['budget_prevu']
@@ -195,8 +197,9 @@ class PTBADashboardService:
             bd = row['budget_decaisse']
             ra = row['resultats_attendus']
             rr = row['resultats_realises']
+            composante_id = row['sous_activite__activite__sous_composante__composante__id']
             results.append({
-                'composante_id': row['sous_activite__activite__sous_composante__composante__id'],
+                'composante_id': composante_id,
                 'composante_code': row['sous_activite__activite__sous_composante__composante__code'],
                 'composante_name': row['sous_activite__activite__sous_composante__composante__name'],
                 'budget_prevu': bp,
@@ -205,8 +208,41 @@ class PTBADashboardService:
                 'taux_engagement': _safe_rate(be, bp),
                 'taux_decaissement': _safe_rate(bd, bp),
                 'taux_realisation': _safe_rate(rr, ra),
+                'quarterly': quarterly.get(composante_id, []),
             })
         return results
+
+    @classmethod
+    def _get_composante_quarterly(cls, ptba, year=None):
+        """T1-T4 execution rates of each composante: {composante_id: [rates]}.
+
+        Only quarters holding executions are listed.
+        """
+        exec_qs = QuarterlyExecution.objects.filter(
+            sous_activite__activite__sous_composante__composante__ptba=ptba,
+        )
+        if year is not None:
+            exec_qs = exec_qs.filter(year=year)
+        rows = exec_qs.values(
+            'sous_activite__activite__sous_composante__composante__id', 'quarter',
+        ).annotate(
+            budget_prevu=Coalesce(Sum('budget_prevu'), ZERO),
+            budget_engage=Coalesce(Sum('budget_engage'), ZERO),
+            budget_decaisse=Coalesce(Sum('budget_decaisse'), ZERO),
+            resultats_attendus=Coalesce(Sum('resultats_attendus'), ZERO),
+            resultats_realises=Coalesce(Sum('resultats_realises'), ZERO),
+        ).order_by('quarter')
+        by_composante = {}
+        for row in rows:
+            by_composante.setdefault(
+                row['sous_activite__activite__sous_composante__composante__id'], [],
+            ).append({
+                'quarter': row['quarter'],
+                'taux_engagement': _safe_rate(row['budget_engage'], row['budget_prevu']),
+                'taux_decaissement': _safe_rate(row['budget_decaisse'], row['budget_prevu']),
+                'taux_realisation': _safe_rate(row['resultats_realises'], row['resultats_attendus']),
+            })
+        return by_composante
 
     @classmethod
     def _get_quarterly_trend(cls, ptba, year=None):

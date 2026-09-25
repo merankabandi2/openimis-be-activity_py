@@ -1,6 +1,6 @@
 import graphene
 from django.contrib.auth.models import AnonymousUser
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.apps import apps
 
 from core.schema import OrderedDjangoFilterConnectionField
@@ -84,6 +84,55 @@ class Query(graphene.ObjectType):
         quarter=graphene.Int(),
         year=graphene.Int(),
     )
+
+    @staticmethod
+    def _check_search_rights(info, *perm_names):
+        """Refuse the list unless the user holds one of the module search rights.
+
+        The message differs from core's "unauthorized", which the frontend
+        treats as an expired session.
+        """
+        user = info.context.user
+        config = apps.get_app_config('activity')
+        if type(user) is AnonymousUser or not user.id or not any(
+                user.has_perms(getattr(config, name)) for name in perm_names):
+            raise PermissionDenied("activity.query.insufficient_rights")
+
+    # The PTBA hierarchy is listed by the PTBA screens and by the PTBA
+    # selectors of the weekly plan and calendar (activity search) and of the
+    # PTBA dashboard (dashboard view).
+    PTBA_LIST_PERMS = ('gql_ptba_search_perms', 'gql_activity_search_perms', 'gql_dashboard_view_perms')
+
+    def resolve_ptba(self, info, **kwargs):
+        Query._check_search_rights(info, *Query.PTBA_LIST_PERMS)
+
+    def resolve_composante(self, info, **kwargs):
+        Query._check_search_rights(info, *Query.PTBA_LIST_PERMS)
+
+    def resolve_sous_composante(self, info, **kwargs):
+        Query._check_search_rights(info, *Query.PTBA_LIST_PERMS)
+
+    def resolve_activite(self, info, **kwargs):
+        Query._check_search_rights(info, 'gql_activity_search_perms')
+
+    def resolve_sous_activite(self, info, **kwargs):
+        Query._check_search_rights(info, 'gql_activity_search_perms')
+
+    def resolve_funding_source(self, info, **kwargs):
+        Query._check_search_rights(
+            info, 'gql_ptba_search_perms', 'gql_activity_search_perms', 'gql_funding_manage_perms')
+
+    def resolve_sous_activite_funding(self, info, **kwargs):
+        Query._check_search_rights(info, 'gql_activity_search_perms', 'gql_funding_manage_perms')
+
+    def resolve_quarterly_execution(self, info, **kwargs):
+        Query._check_search_rights(info, 'gql_activity_search_perms')
+
+    def resolve_activity_status_transition(self, info, **kwargs):
+        Query._check_search_rights(info, 'gql_activity_search_perms')
+
+    def resolve_weekly_plan_entry(self, info, **kwargs):
+        Query._check_search_rights(info, 'gql_activity_search_perms')
 
     def resolve_ptba_dashboard(self, info, ptba_id, quarter=None, year=None, **kwargs):
         user = info.context.user
