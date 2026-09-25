@@ -13,6 +13,13 @@ class FundingBreakdownType(graphene.ObjectType):
     percentage = graphene.Decimal()
 
 
+class QuarterlyTrendType(graphene.ObjectType):
+    quarter = graphene.Int()
+    taux_engagement = graphene.Decimal()
+    taux_decaissement = graphene.Decimal()
+    taux_realisation = graphene.Decimal()
+
+
 class ComposantePerformanceType(graphene.ObjectType):
     composante_id = graphene.UUID()
     composante_code = graphene.String()
@@ -23,13 +30,10 @@ class ComposantePerformanceType(graphene.ObjectType):
     taux_engagement = graphene.Decimal()
     taux_decaissement = graphene.Decimal()
     taux_realisation = graphene.Decimal()
+    quarterly = graphene.List(QuarterlyTrendType)
 
-
-class QuarterlyTrendType(graphene.ObjectType):
-    quarter = graphene.Int()
-    taux_engagement = graphene.Decimal()
-    taux_decaissement = graphene.Decimal()
-    taux_realisation = graphene.Decimal()
+    def resolve_quarterly(self, info):
+        return [QuarterlyTrendType(**item) for item in (getattr(self, 'quarterly', None) or [])]
 
 
 class DelayedActivityType(graphene.ObjectType):

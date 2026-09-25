@@ -141,32 +141,6 @@ class Command(BaseCommand):
         self.stdout.write(f"Using sheet: {ws.title}")
         self.stdout.write(f"Total rows: {ws.max_row}, Total columns: {ws.max_column}")
 
-        # Get or create PTBA
-        ptba = PTBA.objects.filter(code=ptba_code).first()
-        if not ptba:
-            ptba_name = options.get('ptba_name') or ptba_code
-            fiscal_start = options.get('fiscal_year_start') or '2024-07-01'
-            fiscal_end = options.get('fiscal_year_end') or '2025-06-30'
-            if dry_run:
-                self.stdout.write(
-                    f"[DRY RUN] Would create PTBA: {ptba_code} ({ptba_name})"
-                )
-            else:
-                ptba = PTBA.objects.create(
-                    code=ptba_code,
-                    name=ptba_name,
-                    fiscal_year_start=fiscal_start,
-                    fiscal_year_end=fiscal_end,
-                    status=PTBAStatus.DRAFT,
-                )
-                self.stdout.write(self.style.SUCCESS(f"Created PTBA: {ptba}"))
-        else:
-            self.stdout.write(f"Using existing PTBA: {ptba}")
-
-        if dry_run and not ptba:
-            self.stdout.write("[DRY RUN] Cannot proceed without PTBA object. Exiting.")
-            return
-
         # Pre-load funding sources
         funding_sources = {}
         for _, fs_code in FUNDING_COLUMNS:
@@ -200,6 +174,21 @@ class Command(BaseCommand):
         sort_order_sous_activite = 0
 
         with transaction.atomic():
+            # Get or create PTBA. A dry run performs the whole import and
+            # rolls it back, so its summary is the one the real run prints.
+            ptba = PTBA.objects.filter(code=ptba_code).first()
+            if not ptba:
+                ptba = PTBA.objects.create(
+                    code=ptba_code,
+                    name=options.get('ptba_name') or ptba_code,
+                    fiscal_year_start=options.get('fiscal_year_start') or '2024-07-01',
+                    fiscal_year_end=options.get('fiscal_year_end') or '2025-06-30',
+                    status=PTBAStatus.DRAFT,
+                )
+                self.stdout.write(self.style.SUCCESS(f"Created PTBA: {ptba}"))
+            else:
+                self.stdout.write(f"Using existing PTBA: {ptba}")
+
             for row_num in range(data_start_row, ws.max_row + 1):
                 row = [ws.cell(row=row_num, column=c + 1).value for c in range(max(32, ws.max_column))]
 
@@ -212,67 +201,58 @@ class Command(BaseCommand):
                 comp_code = safe_str(row[COL_COMPOSANTE_CODE])
                 comp_name = safe_str(row[COL_COMPOSANTE_NAME])
                 if comp_code and comp_name:
-                    if dry_run:
-                        self.stdout.write(f"  [DRY RUN] Composante: {comp_code} - {comp_name}")
-                    else:
-                        sort_order_composante += 1
-                        current_composante, created = Composante.objects.update_or_create(
-                            ptba=ptba, code=comp_code,
-                            defaults={
-                                'name': comp_name,
-                                'sort_order': sort_order_composante,
-                            },
-                        )
-                        if created:
-                            stats['composantes'] += 1
+                    sort_order_composante += 1
+                    current_composante, created = Composante.objects.update_or_create(
+                        ptba=ptba, code=comp_code,
+                        defaults={
+                            'name': comp_name,
+                            'sort_order': sort_order_composante,
+                        },
+                    )
+                    if created:
+                        stats['composantes'] += 1
                     sort_order_sous_composante = 0
 
                 # SousComposante
                 sc_code = safe_str(row[COL_SOUS_COMPOSANTE_CODE])
                 sc_name = safe_str(row[COL_SOUS_COMPOSANTE_NAME])
                 if sc_code and sc_name and current_composante:
-                    if dry_run:
-                        self.stdout.write(f"    [DRY RUN] SousComposante: {sc_code} - {sc_name}")
-                    else:
-                        sort_order_sous_composante += 1
-                        current_sous_composante, created = SousComposante.objects.update_or_create(
-                            composante=current_composante, code=sc_code,
-                            defaults={
-                                'name': sc_name,
-                                'sort_order': sort_order_sous_composante,
-                            },
-                        )
-                        if created:
-                            stats['sous_composantes'] += 1
+                    sort_order_sous_composante += 1
+                    current_sous_composante, created = SousComposante.objects.update_or_create(
+                        composante=current_composante, code=sc_code,
+                        defaults={
+                            'name': sc_name,
+                            'sort_order': sort_order_sous_composante,
+                        },
+                    )
+                    if created:
+                        stats['sous_composantes'] += 1
                     sort_order_activite = 0
 
                 # Activite
                 act_code = safe_str(row[COL_ACTIVITE_CODE])
                 act_name = safe_str(row[COL_ACTIVITE_NAME])
                 if act_name and current_sous_composante:
-                    if dry_run:
-                        self.stdout.write(f"      [DRY RUN] Activite: {act_code} - {act_name}")
+                    sort_order_activite += 1
+                    activite_lookup = {'sous_composante': current_sous_composante}
+                    if act_code:
+                        activite_lookup['code'] = act_code
                     else:
-                        sort_order_activite += 1
-                        activite_lookup = {'sous_composante': current_sous_composante}
-                        if act_code:
-                            activite_lookup['code'] = act_code
-                        else:
-                            activite_lookup['name'] = act_name
-                        current_activite, created = Activite.objects.update_or_create(
-                            **activite_lookup,
-                            defaults={
-                                'code': act_code,
-                                'name': act_name,
-                                'indicator_description': safe_str(row[COL_INDICATEUR]),
-                                'province': safe_str(row[COL_PROVINCE]),
-                                'implementing_structure': safe_str(row[COL_STRUCTURE]),
-                                'procurement_method': safe_str(row[COL_PASSATION]),
-                                'sort_order': sort_order_activite,
-                            },
-                        )
-                        if created:
-                            stats['activites'] += 1
+                        activite_lookup['name'] = act_name
+                    current_activite, created = Activite.objects.update_or_create(
+                        **activite_lookup,
+                        defaults={
+                            'code': act_code,
+                            'name': act_name,
+                            'indicator_description': safe_str(row[COL_INDICATEUR]),
+                            'province': safe_str(row[COL_PROVINCE]),
+                            'implementing_structure': safe_str(row[COL_STRUCTURE]),
+                            'procurement_method': safe_str(row[COL_PASSATION]),
+                            'sort_order': sort_order_activite,
+                        },
+                    )
+                    if created:
+                        stats['activites'] += 1
                     sort_order_sous_activite = 0
 
                 # SousActivite
@@ -291,55 +271,54 @@ class Command(BaseCommand):
                     budget_t4 = safe_decimal(row[COL_BUDGET_T4])
                     budget_total = safe_decimal(row[COL_BUDGET_TOTAL])
 
-                    if not dry_run:
-                        sort_order_sous_activite += 1
-                        sa_lookup = {'activite': current_activite}
-                        if sa_code:
-                            sa_lookup['code'] = sa_code
-                        else:
-                            sa_lookup['name'] = sa_name
-
-                        sa, created = SousActivite.objects.update_or_create(
-                            **sa_lookup,
-                            defaults={
-                                'code': sa_code,
-                                'name': sa_name,
-                                'expense_category_code': safe_str(row[COL_CATEGORY_CODE]),
-                                'expense_category': safe_str(row[COL_CATEGORY_NAME]),
-                                'unit': safe_str(row[COL_UNITE]),
-                                'quantity_total': quantity_total,
-                                'quantity_t1': quantity_t1,
-                                'quantity_t2': quantity_t2,
-                                'quantity_t3': quantity_t3,
-                                'quantity_t4': quantity_t4,
-                                'unit_cost': unit_cost,
-                                'budget_t1': budget_t1,
-                                'budget_t2': budget_t2,
-                                'budget_t3': budget_t3,
-                                'budget_t4': budget_t4,
-                                'budget_total': budget_total,
-                                'sort_order': sort_order_sous_activite,
-                            },
-                        )
-                        if created:
-                            stats['sous_activites'] += 1
-                        stats['total_budget'] += budget_total
-
-                        # Funding allocations
-                        for col_idx, fs_code in FUNDING_COLUMNS:
-                            amount = safe_decimal(row[col_idx] if col_idx < len(row) else None)
-                            if amount > 0 and fs_code in funding_sources:
-                                SousActiviteFunding.objects.update_or_create(
-                                    sous_activite=sa,
-                                    funding_source=funding_sources[fs_code],
-                                    defaults={'amount': amount},
-                                )
-                                stats['funding_allocations'] += 1
+                    sort_order_sous_activite += 1
+                    sa_lookup = {'activite': current_activite}
+                    if sa_code:
+                        sa_lookup['code'] = sa_code
                     else:
+                        sa_lookup['name'] = sa_name
+
+                    sa, created = SousActivite.objects.update_or_create(
+                        **sa_lookup,
+                        defaults={
+                            'code': sa_code,
+                            'name': sa_name,
+                            'expense_category_code': safe_str(row[COL_CATEGORY_CODE]),
+                            'expense_category': safe_str(row[COL_CATEGORY_NAME]),
+                            'unit': safe_str(row[COL_UNITE]),
+                            'quantity_total': quantity_total,
+                            'quantity_t1': quantity_t1,
+                            'quantity_t2': quantity_t2,
+                            'quantity_t3': quantity_t3,
+                            'quantity_t4': quantity_t4,
+                            'unit_cost': unit_cost,
+                            'budget_t1': budget_t1,
+                            'budget_t2': budget_t2,
+                            'budget_t3': budget_t3,
+                            'budget_t4': budget_t4,
+                            'budget_total': budget_total,
+                            'sort_order': sort_order_sous_activite,
+                        },
+                    )
+                    if created:
                         stats['sous_activites'] += 1
-                        stats['total_budget'] += safe_decimal(row[COL_BUDGET_TOTAL])
+                    stats['total_budget'] += budget_total
+
+                    # Funding allocations
+                    for col_idx, fs_code in FUNDING_COLUMNS:
+                        amount = safe_decimal(row[col_idx] if col_idx < len(row) else None)
+                        if amount > 0 and fs_code in funding_sources:
+                            SousActiviteFunding.objects.update_or_create(
+                                sous_activite=sa,
+                                funding_source=funding_sources[fs_code],
+                                defaults={'amount': amount},
+                            )
+                            stats['funding_allocations'] += 1
 
                 stats['rows_processed'] += 1
+
+            if dry_run:
+                transaction.set_rollback(True)
 
         # Report
         self.stdout.write("")

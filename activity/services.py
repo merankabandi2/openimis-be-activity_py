@@ -19,14 +19,23 @@ class ActivityLifecycleService:
         ActivityStatus.CLOTURE: [],
     }
 
+    # Name of the activity app-config right list each transition requires.
     TRANSITION_PERMS = {
-        (ActivityStatus.PLANIFIE, ActivityStatus.BUDGETISE): ['170003'],
-        (ActivityStatus.BUDGETISE, ActivityStatus.EN_COURS): ['170011'],
-        (ActivityStatus.EN_COURS, ActivityStatus.REALISE): ['170009'],
-        (ActivityStatus.REALISE, ActivityStatus.CLOTURE): ['170010'],
-        (ActivityStatus.BUDGETISE, ActivityStatus.PLANIFIE): ['170011'],
-        (ActivityStatus.REALISE, ActivityStatus.EN_COURS): ['170011'],
+        (ActivityStatus.PLANIFIE, ActivityStatus.BUDGETISE): 'gql_ptba_update_perms',
+        (ActivityStatus.BUDGETISE, ActivityStatus.EN_COURS): 'gql_transition_perms',
+        (ActivityStatus.EN_COURS, ActivityStatus.REALISE): 'gql_execution_report_perms',
+        (ActivityStatus.REALISE, ActivityStatus.CLOTURE): 'gql_execution_approve_perms',
+        (ActivityStatus.BUDGETISE, ActivityStatus.PLANIFIE): 'gql_transition_perms',
+        (ActivityStatus.REALISE, ActivityStatus.EN_COURS): 'gql_transition_perms',
     }
+
+    @classmethod
+    def required_perms(cls, from_status, to_status):
+        from django.apps import apps
+        config_name = cls.TRANSITION_PERMS.get((from_status, to_status))
+        if not config_name:
+            return []
+        return getattr(apps.get_app_config('activity'), config_name)
 
     @classmethod
     def transition(cls, activite, to_status, user, comment=''):
@@ -39,7 +48,7 @@ class ActivityLifecycleService:
                 f"Valid targets: {valid_targets}"
             )
 
-        required_perms = cls.TRANSITION_PERMS.get((from_status, to_status), [])
+        required_perms = cls.required_perms(from_status, to_status)
         if required_perms and not user.has_perms(required_perms):
             raise PermissionError(
                 f"Insufficient permissions for transition {from_status} -> {to_status}"

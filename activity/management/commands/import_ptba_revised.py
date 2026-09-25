@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from activity.quarters import quarterly_split
 from activity.models import (
     PTBA, PTBAStatus, Composante, SousComposante, Activite,
     SousActivite, FundingSource, SousActiviteFunding, RevisionStatus,
@@ -152,49 +153,6 @@ class Command(BaseCommand):
             f"Total rows: {ws.max_row}, Total columns: {ws.max_column}"
         )
 
-        # Get or create PTBA
-        ptba = PTBA.objects.filter(code=ptba_code).first()
-        if not ptba:
-            ptba_name = options.get('ptba_name') or ptba_code
-            fiscal_start = options.get('fiscal_year_start') or '2025-07-01'
-            fiscal_end = options.get('fiscal_year_end') or '2026-06-30'
-            if dry_run:
-                self.stdout.write(
-                    f"[DRY RUN] Would create PTBA: {ptba_code} ({ptba_name})"
-                )
-            else:
-                ptba = PTBA.objects.create(
-                    code=ptba_code,
-                    name=ptba_name,
-                    fiscal_year_start=fiscal_start,
-                    fiscal_year_end=fiscal_end,
-                    status=PTBAStatus.DRAFT,
-                )
-                self.stdout.write(
-                    self.style.SUCCESS(f"Created PTBA: {ptba}")
-                )
-        else:
-            self.stdout.write(f"Using existing PTBA: {ptba}")
-
-        if dry_run and not ptba:
-            self.stdout.write(
-                "[DRY RUN] Cannot proceed without PTBA object. Exiting."
-            )
-            return
-
-        # Ensure funding sources exist for IDA D94400 and IDA E33370
-        fs_d94400 = None
-        fs_e33370 = None
-        if not dry_run:
-            fs_d94400, _ = FundingSource.objects.get_or_create(
-                code='D94400',
-                defaults={'name': 'IDA D94400', 'is_active': True},
-            )
-            fs_e33370, _ = FundingSource.objects.get_or_create(
-                code='E33370',
-                defaults={'name': 'IDA E33370', 'is_active': True},
-            )
-
         # Parse rows
         stats = {
             'composantes': 0,
@@ -218,7 +176,38 @@ class Command(BaseCommand):
 
         num_cols = max(21, ws.max_column or 21)
 
+        # The format has no sous-activite code: a line is identified by its
+        # name within its activity, so a repeated name would overwrite the
+        # earlier line.
+        seen_lines = {}
+        duplicates = []
+
         with transaction.atomic():
+            # Get or create PTBA. A dry run performs the whole import and
+            # rolls it back, so its summary is the one the real run prints.
+            ptba = PTBA.objects.filter(code=ptba_code).first()
+            if not ptba:
+                ptba = PTBA.objects.create(
+                    code=ptba_code,
+                    name=options.get('ptba_name') or ptba_code,
+                    fiscal_year_start=options.get('fiscal_year_start') or '2025-07-01',
+                    fiscal_year_end=options.get('fiscal_year_end') or '2026-06-30',
+                    status=PTBAStatus.DRAFT,
+                )
+                self.stdout.write(self.style.SUCCESS(f"Created PTBA: {ptba}"))
+            else:
+                self.stdout.write(f"Using existing PTBA: {ptba}")
+
+            # Funding sources for IDA D94400 and IDA E33370
+            fs_d94400, _ = FundingSource.objects.get_or_create(
+                code='D94400',
+                defaults={'name': 'IDA D94400', 'is_active': True},
+            )
+            fs_e33370, _ = FundingSource.objects.get_or_create(
+                code='E33370',
+                defaults={'name': 'IDA E33370', 'is_active': True},
+            )
+
             for row_num in range(data_start_row, ws.max_row + 1):
                 row = [
                     ws.cell(row=row_num, column=c + 1).value
@@ -250,24 +239,18 @@ class Command(BaseCommand):
                             comp_code = digits
                             comp_name = composante_text
 
-                    if dry_run:
-                        self.stdout.write(
-                            f"  [DRY RUN] Composante: {comp_code} - "
-                            f"{comp_name[:80]}"
+                    sort_order_composante += 1
+                    current_composante, created = (
+                        Composante.objects.update_or_create(
+                            ptba=ptba, code=comp_code,
+                            defaults={
+                                'name': comp_name,
+                                'sort_order': sort_order_composante,
+                            },
                         )
-                    else:
-                        sort_order_composante += 1
-                        current_composante, created = (
-                            Composante.objects.update_or_create(
-                                ptba=ptba, code=comp_code,
-                                defaults={
-                                    'name': comp_name,
-                                    'sort_order': sort_order_composante,
-                                },
-                            )
-                        )
-                        if created:
-                            stats['composantes'] += 1
+                    )
+                    if created:
+                        stats['composantes'] += 1
                     sort_order_sous_composante = 0
                     stats['rows_processed'] += 1
                     continue
@@ -287,24 +270,18 @@ class Command(BaseCommand):
                 if not sc_name and sc_code_raw:
                     sc_name = sc_code_raw
                 if sc_code and sc_name and current_composante:
-                    if dry_run:
-                        self.stdout.write(
-                            f"    [DRY RUN] SousComposante: {sc_code} - "
-                            f"{sc_name[:80]}"
+                    sort_order_sous_composante += 1
+                    current_sous_composante, created = (
+                        SousComposante.objects.update_or_create(
+                            composante=current_composante, code=sc_code,
+                            defaults={
+                                'name': sc_name,
+                                'sort_order': sort_order_sous_composante,
+                            },
                         )
-                    else:
-                        sort_order_sous_composante += 1
-                        current_sous_composante, created = (
-                            SousComposante.objects.update_or_create(
-                                composante=current_composante, code=sc_code,
-                                defaults={
-                                    'name': sc_name,
-                                    'sort_order': sort_order_sous_composante,
-                                },
-                            )
-                        )
-                        if created:
-                            stats['sous_composantes'] += 1
+                    )
+                    if created:
+                        stats['sous_composantes'] += 1
                     sort_order_activite = 0
 
                 # Activite
@@ -314,34 +291,28 @@ class Command(BaseCommand):
                     revision_status = parse_revision_status(row[COL_STATUT])
                     revision_comment = safe_str(row[COL_COMMENTAIRE])
 
-                    if dry_run:
-                        self.stdout.write(
-                            f"      [DRY RUN] Activite: {act_code} - "
-                            f"{act_name[:60]} [{revision_status}]"
-                        )
+                    sort_order_activite += 1
+                    activite_lookup = {
+                        'sous_composante': current_sous_composante,
+                    }
+                    if act_code:
+                        activite_lookup['code'] = act_code
                     else:
-                        sort_order_activite += 1
-                        activite_lookup = {
-                            'sous_composante': current_sous_composante,
-                        }
-                        if act_code:
-                            activite_lookup['code'] = act_code
-                        else:
-                            activite_lookup['name'] = act_name
-                        current_activite, created = (
-                            Activite.objects.update_or_create(
-                                **activite_lookup,
-                                defaults={
-                                    'code': act_code,
-                                    'name': act_name,
-                                    'sort_order': sort_order_activite,
-                                    'revision_status': revision_status,
-                                    'revision_comment': revision_comment,
-                                },
-                            )
+                        activite_lookup['name'] = act_name
+                    current_activite, created = (
+                        Activite.objects.update_or_create(
+                            **activite_lookup,
+                            defaults={
+                                'code': act_code,
+                                'name': act_name,
+                                'sort_order': sort_order_activite,
+                                'revision_status': revision_status,
+                                'revision_comment': revision_comment,
+                            },
                         )
-                        if created:
-                            stats['activites'] += 1
+                    )
+                    if created:
+                        stats['activites'] += 1
                     sort_order_sous_activite = 0
 
                 # SousActivite
@@ -369,97 +340,108 @@ class Command(BaseCommand):
                         budget_revised if budget_revised is not None else budget_initial
                     )
 
-                    if not dry_run:
-                        sort_order_sous_activite += 1
-                        # NOTE: Lookup by name may fail with MultipleObjectsReturned
-                        # if duplicate sous-activite names exist under the same
-                        # activite. The revised PTBA format does not include
-                        # sous-activite codes, so name-based matching is the
-                        # best option.
-                        sa_lookup = {'activite': current_activite}
-                        sa_lookup['name'] = sa_name
+                    sort_order_sous_activite += 1
+                    # The revised PTBA format has no sous-activite code, so a
+                    # line is matched by name within its activity.
+                    sa_lookup = {'activite': current_activite}
+                    sa_lookup['name'] = sa_name
 
-                        sa_defaults = {
-                            'name': sa_name,
-                            'expense_category': category,
-                            'unit': unit,
-                            'quantity_total': effective_qty,
-                            'unit_cost': effective_uc,
-                            'budget_total': effective_budget,
-                            'quantity_initial': qty_initial,
-                            'quantity_revised': qty_revised,
-                            'unit_cost_initial': uc_initial,
-                            'unit_cost_revised': uc_revised,
-                            'budget_initial': budget_initial,
-                            'budget_revised': budget_revised,
-                            'revision_status': revision_status,
-                            'revision_comment': revision_comment,
-                            'sort_order': sort_order_sous_activite,
-                        }
-                        try:
-                            sa, created = SousActivite.objects.update_or_create(
-                                **sa_lookup,
-                                defaults=sa_defaults,
-                            )
-                        except SousActivite.MultipleObjectsReturned:
-                            sa = SousActivite.objects.filter(**sa_lookup).first()
-                            for k, v in sa_defaults.items():
-                                setattr(sa, k, v)
-                            sa.save()
-                            created = False
-                        if created:
-                            stats['sous_activites'] += 1
-                        stats['total_budget_initial'] += budget_initial
-                        stats['total_budget_revised'] += (
-                            budget_revised if budget_revised is not None
-                            else budget_initial
+                    line_key = (current_activite.pk, sa_name.lower())
+                    if line_key in seen_lines:
+                        duplicates.append(
+                            f"row {row_num} repeats row {seen_lines[line_key]}: "
+                            f"'{sa_name}' under activity "
+                            f"{current_activite.code or current_activite.name}"
                         )
+                        stats['rows_processed'] += 1
+                        continue
+                    seen_lines[line_key] = row_num
+                    existing_sa = SousActivite.objects.filter(**sa_lookup).first()
 
-                        # Funding allocations: IDA D94400
-                        d94400_init = safe_decimal(row[COL_D94400_INITIALE])
-                        d94400_rev = safe_decimal(row[COL_D94400_REVISEE], default=None)
-                        effective_d94400 = (
-                            d94400_rev if d94400_rev is not None else d94400_init
+                    sa_defaults = {
+                        'name': sa_name,
+                        'expense_category': category,
+                        'unit': unit,
+                        'quantity_total': effective_qty,
+                        'unit_cost': effective_uc,
+                        'budget_total': effective_budget,
+                        'quantity_initial': qty_initial,
+                        'quantity_revised': qty_revised,
+                        'unit_cost_initial': uc_initial,
+                        'unit_cost_revised': uc_revised,
+                        'budget_initial': budget_initial,
+                        'budget_revised': budget_revised,
+                        'revision_status': revision_status,
+                        'revision_comment': revision_comment,
+                        'sort_order': sort_order_sous_activite,
+                        **quarterly_split(existing_sa, effective_qty, effective_budget),
+                    }
+                    try:
+                        sa, created = SousActivite.objects.update_or_create(
+                            **sa_lookup,
+                            defaults=sa_defaults,
                         )
-                        if effective_d94400 and effective_d94400 > 0 and fs_d94400:
-                            SousActiviteFunding.objects.update_or_create(
-                                sous_activite=sa,
-                                funding_source=fs_d94400,
-                                defaults={
-                                    'amount': effective_d94400,
-                                    'amount_initial': d94400_init,
-                                    'amount_revised': d94400_rev,
-                                },
-                            )
-                            stats['funding_allocations'] += 1
-
-                        # Funding allocations: IDA E33370
-                        e33370_init = safe_decimal(row[COL_E33370_INITIALE])
-                        e33370_rev = safe_decimal(row[COL_E33370_REVISEE], default=None)
-                        effective_e33370 = (
-                            e33370_rev if e33370_rev is not None else e33370_init
-                        )
-                        if effective_e33370 and effective_e33370 > 0 and fs_e33370:
-                            SousActiviteFunding.objects.update_or_create(
-                                sous_activite=sa,
-                                funding_source=fs_e33370,
-                                defaults={
-                                    'amount': effective_e33370,
-                                    'amount_initial': e33370_init,
-                                    'amount_revised': e33370_rev,
-                                },
-                            )
-                            stats['funding_allocations'] += 1
-                    else:
+                    except SousActivite.MultipleObjectsReturned:
+                        sa = SousActivite.objects.filter(**sa_lookup).first()
+                        for k, v in sa_defaults.items():
+                            setattr(sa, k, v)
+                        sa.save()
+                        created = False
+                    if created:
                         stats['sous_activites'] += 1
-                        stats['total_budget_initial'] += safe_decimal(
-                            row[COL_BUDGET_INITIALE]
+                    stats['total_budget_initial'] += budget_initial
+                    stats['total_budget_revised'] += (
+                        budget_revised if budget_revised is not None
+                        else budget_initial
+                    )
+
+                    # Funding allocations: IDA D94400
+                    d94400_init = safe_decimal(row[COL_D94400_INITIALE])
+                    d94400_rev = safe_decimal(row[COL_D94400_REVISEE], default=None)
+                    effective_d94400 = (
+                        d94400_rev if d94400_rev is not None else d94400_init
+                    )
+                    if effective_d94400 and effective_d94400 > 0 and fs_d94400:
+                        SousActiviteFunding.objects.update_or_create(
+                            sous_activite=sa,
+                            funding_source=fs_d94400,
+                            defaults={
+                                'amount': effective_d94400,
+                                'amount_initial': d94400_init,
+                                'amount_revised': d94400_rev,
+                            },
                         )
-                        stats['total_budget_revised'] += safe_decimal(
-                            row[COL_BUDGET_REVISEE]
+                        stats['funding_allocations'] += 1
+
+                    # Funding allocations: IDA E33370
+                    e33370_init = safe_decimal(row[COL_E33370_INITIALE])
+                    e33370_rev = safe_decimal(row[COL_E33370_REVISEE], default=None)
+                    effective_e33370 = (
+                        e33370_rev if e33370_rev is not None else e33370_init
+                    )
+                    if effective_e33370 and effective_e33370 > 0 and fs_e33370:
+                        SousActiviteFunding.objects.update_or_create(
+                            sous_activite=sa,
+                            funding_source=fs_e33370,
+                            defaults={
+                                'amount': effective_e33370,
+                                'amount_initial': e33370_init,
+                                'amount_revised': e33370_rev,
+                            },
                         )
+                        stats['funding_allocations'] += 1
 
                 stats['rows_processed'] += 1
+
+            if duplicates:
+                raise CommandError(
+                    "Sous-activite names repeated within one activity; each "
+                    "line needs a distinct name. Nothing was imported.\n  "
+                    + "\n  ".join(duplicates)
+                )
+
+            if dry_run:
+                transaction.set_rollback(True)
 
         # Report
         self.stdout.write("")

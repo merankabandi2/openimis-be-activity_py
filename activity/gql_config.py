@@ -2,14 +2,15 @@
 GraphQL Permission Configuration for Activity Module
 
 This module defines all the permissions used by the Activity module.
-Permission range: 170001-170013
+Permission range: 170005-170017. 170001-170004 belong to social_protection
+(gql_beneficiary_*_perms) and are not used here.
 """
 
-# PTBA Management Permissions (170001-170004)
-GQL_PTBA_SEARCH_PERMS = ["170001"]
-GQL_PTBA_CREATE_PERMS = ["170002"]
-GQL_PTBA_UPDATE_PERMS = ["170003"]
-GQL_PTBA_DELETE_PERMS = ["170004"]
+# PTBA Management Permissions (170014-170017)
+GQL_PTBA_SEARCH_PERMS = ["170014"]
+GQL_PTBA_CREATE_PERMS = ["170015"]
+GQL_PTBA_UPDATE_PERMS = ["170016"]
+GQL_PTBA_DELETE_PERMS = ["170017"]
 
 # Activity Management Permissions (170005-170008)
 GQL_ACTIVITY_SEARCH_PERMS = ["170005"]
@@ -32,10 +33,6 @@ GQL_FUNDING_MANAGE_PERMS = ["170013"]
 
 # Permission Descriptions for Documentation
 PERMISSION_DESCRIPTIONS = {
-    "170001": "Search and view PTBAs",
-    "170002": "Create new PTBAs",
-    "170003": "Update existing PTBAs",
-    "170004": "Delete PTBAs",
     "170005": "Search and view activities",
     "170006": "Create new activities",
     "170007": "Update existing activities",
@@ -45,4 +42,8 @@ PERMISSION_DESCRIPTIONS = {
     "170011": "Transition activity status",
     "170012": "View activity dashboards",
     "170013": "Manage funding sources and allocations",
+    "170014": "Search and view PTBAs",
+    "170015": "Create new PTBAs",
+    "170016": "Update existing PTBAs",
+    "170017": "Delete PTBAs",
 }
