@@ -2,6 +2,7 @@ import graphene
 from gettext import gettext as _
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError
+from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
@@ -18,6 +19,7 @@ from activity.models import (
     FundingSource, SousActiviteFunding, WeeklyPlanEntry,
     ActivityStatusTransition, RevisionStatus,
 )
+from activity.quarters import QUARTERLY_BUDGET_FIELDS, QUARTERLY_QUANTITY_FIELDS, quarterly_split
 from activity.services import ActivityLifecycleService, QuarterlyExecutionService
 from activity.validation import validate_budget_consistency, validate_funding_allocation
 
@@ -25,6 +27,27 @@ from activity.validation import validate_budget_consistency, validate_funding_al
 def get_activity_config():
     """Get the ActivityConfig instance"""
     return apps.get_app_config('activity')
+
+
+def _ensure_ptba_open(ptba):
+    """A CLOSED PTBA and its composantes / sous-composantes are read-only."""
+    if ptba.status == PTBAStatus.CLOSED:
+        raise ValidationError(
+            _("PTBA %(code)s is closed and can no longer be modified.") % {'code': ptba.code}
+        )
+
+
+def _validate_fiscal_year(start, end):
+    if start and end and end < start:
+        raise ValidationError(
+            _("The fiscal year end (%(end)s) is before its start (%(start)s).")
+            % {'start': start, 'end': end}
+        )
+
+
+QUARTERLY_FIELDS = QUARTERLY_QUANTITY_FIELDS + QUARTERLY_BUDGET_FIELDS
+BUDGET_FIELDS = QUARTERLY_BUDGET_FIELDS + ('budget_total',)
+REVISION_SNAPSHOT_KEY = 'revision_snapshot'
 
 
 # ---- PTBA mutations ----
@@ -62,12 +85,18 @@ class CreatePTBAMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
+        status = data.get('status') or PTBAStatus.DRAFT
+        if status != PTBAStatus.DRAFT:
+            raise ValidationError(
+                _("A PTBA is created in DRAFT status; use transitionPtba to change it.")
+            )
+        _validate_fiscal_year(data['fiscal_year_start'], data['fiscal_year_end'])
         PTBA.objects.create(
             code=data['code'],
             name=data['name'],
             fiscal_year_start=data['fiscal_year_start'],
             fiscal_year_end=data['fiscal_year_end'],
-            status=data.get('status', 'DRAFT'),
+            status=status,
             benefit_plan_id=data.get('benefit_plan_id'),
             json_ext=data.get('json_ext'),
             user_created=user,
@@ -94,7 +123,19 @@ class UpdatePTBAMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         ptba = PTBA.objects.get(id=data['id'])
+        _ensure_ptba_open(ptba)
         update_data = {k: v for k, v in data.items() if k != 'id' and v is not None}
+        # An update may carry the current status; only transitionPtba changes it.
+        status = update_data.pop('status', None)
+        if status is not None and status != ptba.status:
+            raise ValidationError(
+                _("The PTBA status cannot be changed by an update (%(from)s -> %(to)s); "
+                  "use transitionPtba.") % {'from': ptba.status, 'to': status}
+            )
+        _validate_fiscal_year(
+            update_data.get('fiscal_year_start', ptba.fiscal_year_start),
+            update_data.get('fiscal_year_end', ptba.fiscal_year_end),
+        )
         update_data['user_updated'] = user
         ptba.update(data=update_data)
 
@@ -120,8 +161,9 @@ class DeletePTBAMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
         ids = data.get('ids')
         if ids:
             with transaction.atomic():
-                for ptba_id in ids:
-                    PTBA.objects.filter(id=ptba_id).delete()
+                for ptba in PTBA.objects.filter(id__in=ids):
+                    _ensure_ptba_open(ptba)
+                PTBA.objects.filter(id__in=ids).delete()
 
     class Input(DeletePTBAInputType):
         pass
@@ -160,6 +202,7 @@ class CreateComposanteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
+        _ensure_ptba_open(PTBA.objects.get(id=data['ptba_id']))
         Composante.objects.create(
             ptba_id=data['ptba_id'],
             code=data['code'],
@@ -187,7 +230,10 @@ class UpdateComposanteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         composante = Composante.objects.get(id=data['id'])
+        _ensure_ptba_open(composante.ptba)
         update_data = {k: v for k, v in data.items() if k != 'id' and v is not None}
+        if update_data.get('ptba_id'):
+            _ensure_ptba_open(PTBA.objects.get(id=update_data['ptba_id']))
         composante.update(data=update_data)
 
     class Input(UpdateComposanteInputType):
@@ -212,8 +258,9 @@ class DeleteComposanteMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation
         ids = data.get('ids')
         if ids:
             with transaction.atomic():
-                for item_id in ids:
-                    Composante.objects.filter(id=item_id).delete()
+                for composante in Composante.objects.filter(id__in=ids).select_related('ptba'):
+                    _ensure_ptba_open(composante.ptba)
+                Composante.objects.filter(id__in=ids).delete()
 
     class Input(DeleteComposanteInputType):
         pass
@@ -252,6 +299,7 @@ class CreateSousComposanteMutation(BaseHistoryModelCreateMutationMixin, BaseMuta
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
+        _ensure_ptba_open(Composante.objects.select_related('ptba').get(id=data['composante_id']).ptba)
         SousComposante.objects.create(
             composante_id=data['composante_id'],
             code=data['code'],
@@ -278,8 +326,12 @@ class UpdateSousComposanteMutation(BaseHistoryModelUpdateMutationMixin, BaseMuta
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        sc = SousComposante.objects.get(id=data['id'])
+        sc = SousComposante.objects.select_related('composante__ptba').get(id=data['id'])
+        _ensure_ptba_open(sc.composante.ptba)
         update_data = {k: v for k, v in data.items() if k != 'id' and v is not None}
+        if update_data.get('composante_id'):
+            _ensure_ptba_open(
+                Composante.objects.select_related('ptba').get(id=update_data['composante_id']).ptba)
         sc.update(data=update_data)
 
     class Input(UpdateSousComposanteInputType):
@@ -304,8 +356,9 @@ class DeleteSousComposanteMutation(BaseHistoryModelDeleteMutationMixin, BaseMuta
         ids = data.get('ids')
         if ids:
             with transaction.atomic():
-                for item_id in ids:
-                    SousComposante.objects.filter(id=item_id).delete()
+                for sc in SousComposante.objects.filter(id__in=ids).select_related('composante__ptba'):
+                    _ensure_ptba_open(sc.composante.ptba)
+                SousComposante.objects.filter(id__in=ids).delete()
 
     class Input(DeleteSousComposanteInputType):
         pass
@@ -353,6 +406,9 @@ class CreateActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
+        _ensure_ptba_open(
+            SousComposante.objects.select_related('composante__ptba')
+            .get(id=data['sous_composante_id']).composante.ptba)
         Activite.objects.create(
             sous_composante_id=data['sous_composante_id'],
             code=data.get('code', ''),
@@ -560,11 +616,13 @@ class UpdateSousActiviteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutati
             k: v for k, v in data.items()
             if k != 'id' and (v is not None or k in cls.CLEARABLE_FIELDS)
         }
-        # Validate the MERGED state (partial updates may omit budget fields)
         sa.update(data=update_data, save=False)
-        error = validate_budget_consistency(sa)
-        if error:
-            raise ValidationError(error)
+        # An update that sets budget fields must leave the MERGED line
+        # consistent; one that sets none leaves the stored budgets as they are.
+        if any(f in update_data for f in BUDGET_FIELDS):
+            error = validate_budget_consistency(sa)
+            if error:
+                raise ValidationError(error)
         sa.save()
 
     class Input(UpdateSousActiviteInputType):
@@ -789,10 +847,11 @@ class TransitionActivityMutation(BaseMutation):
         # approver — an empty list means nobody is ever notified.
         try:
             from notification.services import NotificationService, RecipientResolver
+            config = get_activity_config()
             event_map = {
                 # to_status: (event code, right gating the next step)
-                'EN_COURS': ('activity.submitted', 170009),   # report execution
-                'REALISE': ('activity.validated', 170010),    # approve / close
+                'EN_COURS': ('activity.submitted', int(config.gql_execution_report_perms[0])),
+                'REALISE': ('activity.validated', int(config.gql_execution_approve_perms[0])),
             }
             mapped = event_map.get(to_status)
             if mapped:
@@ -810,6 +869,11 @@ class TransitionActivityMutation(BaseMutation):
                     context={
                         'activity_type': activite.name,
                         'new_status': to_status,
+                        'location': (
+                            activite.location.name if activite.location_id
+                            else activite.province
+                        ) or '-',
+                        'date': timezone.now().strftime('%d/%m/%Y'),
                     },
                 )
         except Exception as e:
@@ -988,8 +1052,9 @@ class CreateWeeklyPlanEntryMutation(BaseHistoryModelCreateMutationMixin, BaseMut
             intervenants=data.get('intervenants', ''),
             created_by=user,
         )
-        # Enforce model invariants (Monday-only week_start, unique week)
-        entry.full_clean()
+        # Enforce model invariants (Monday-only week_start, unique week).
+        # created_by is set by the system (null for imported entries).
+        entry.full_clean(exclude=['created_by'])
         entry.save()
 
     class Input(CreateWeeklyPlanEntryInputType):
@@ -1021,9 +1086,10 @@ class UpdateWeeklyPlanEntryMutation(BaseHistoryModelUpdateMutationMixin, BaseMut
             k: v for k, v in data.items()
             if k != 'id' and (v is not None or k in cls.CLEARABLE_FIELDS)
         }
-        # Enforce model invariants on the merged state before saving
+        # Enforce model invariants on the merged state before saving.
+        # created_by is set by the system (null for imported entries).
         entry.update(data=update_data, save=False)
-        entry.full_clean()
+        entry.full_clean(exclude=['created_by'])
         entry.save()
 
     class Input(UpdateWeeklyPlanEntryInputType):
@@ -1273,6 +1339,12 @@ class BeginRevisionMutation(BaseMutation):
         sa.quantity_initial = sa.quantity_total
         sa.unit_cost_initial = sa.unit_cost
         sa.budget_initial = sa.budget_total
+        # The *_initial columns hold the totals only; the quarterly split is
+        # kept in json_ext so rejectRevision can restore it.
+        sa.json_ext = {
+            **(sa.json_ext or {}),
+            REVISION_SNAPSHOT_KEY: {f: str(getattr(sa, f)) for f in QUARTERLY_FIELDS},
+        }
         sa.revision_status = 'REVISE'
         sa.save()
 
@@ -1309,6 +1381,8 @@ class ApproveRevisionMutation(BaseMutation):
         sa.quantity_revised = sa.quantity_total
         sa.unit_cost_revised = sa.unit_cost
         sa.budget_revised = sa.budget_total
+        if sa.json_ext:
+            sa.json_ext.pop(REVISION_SNAPSHOT_KEY, None)
         sa.revision_status = 'INITIAL'
         sa.revision_comment = data.get('comment', '')
         sa.save()
@@ -1346,6 +1420,15 @@ class RejectRevisionMutation(BaseMutation):
         sa.quantity_total = sa.quantity_initial
         sa.unit_cost = sa.unit_cost_initial
         sa.budget_total = sa.budget_initial
+        snapshot = (sa.json_ext or {}).pop(REVISION_SNAPSHOT_KEY, None)
+        if snapshot:
+            for f in QUARTERLY_FIELDS:
+                setattr(sa, f, Decimal(snapshot[f]))
+        else:
+            # Revision begun without a snapshot: re-split the restored totals
+            # in the shape of the current quarters.
+            for f, v in quarterly_split(sa, sa.quantity_total, sa.budget_total).items():
+                setattr(sa, f, v)
         sa.revision_status = 'ABANDONNE'
         sa.revision_comment = data.get('reason', '')
         sa.save()

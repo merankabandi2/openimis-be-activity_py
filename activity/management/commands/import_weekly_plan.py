@@ -60,7 +60,7 @@ def get_friday_of_week(dt):
 class Command(BaseCommand):
     help = (
         'Import a weekly operational plan (Planification Hebdo) from Excel. '
-        'Matches sous-activites by name to existing PTBA hierarchy. '
+        'Matches sous-activites by activity code and name to the existing PTBA hierarchy. '
         'Usage: python manage.py import_weekly_plan <excel_file> '
         '--ptba-code PTBA-2025-2026'
     )
@@ -181,13 +181,18 @@ class Command(BaseCommand):
             )
         self.stdout.write(f"Using PTBA: {ptba}")
 
-        # Build lookup of sous-activites by name for this PTBA
+        # Sous-activites of this PTBA by (activity code, name). The same name
+        # may appear under several activities, so the row's activity code is
+        # part of the key. A row without an activity code matches by name
+        # only when that name is unique in the PTBA.
+        sa_by_key = {}
         sa_by_name = {}
         for sa in SousActivite.objects.filter(
             activite__sous_composante__composante__ptba=ptba
         ).select_related('activite'):
-            key = sa.name.strip().lower()
-            sa_by_name[key] = sa
+            name_key = sa.name.strip().lower()
+            sa_by_key[((sa.activite.code or '').strip(), name_key)] = sa
+            sa_by_name.setdefault(name_key, []).append(sa)
 
         # Build lookup of activites by code for this PTBA (for unmatched SA creation)
         act_by_code = {}
@@ -198,7 +203,7 @@ class Command(BaseCommand):
                 act_by_code[act.code.strip()] = act
 
         self.stdout.write(
-            f"Found {len(sa_by_name)} sous-activites in PTBA"
+            f"Found {len(sa_by_key)} sous-activites in PTBA"
         )
         self.stdout.write(
             f"Found {len(act_by_code)} activites by code"
@@ -255,13 +260,17 @@ class Command(BaseCommand):
                     stats['rows_processed'] += 1
                     continue
 
-                # Match sous-activite by name
+                # Match sous-activite by activity code and name
                 sa_key = sa_name.strip().lower()
-                sa = sa_by_name.get(sa_key)
+                if current_act_code:
+                    sa = sa_by_key.get((current_act_code, sa_key))
+                else:
+                    same_name = sa_by_name.get(sa_key, [])
+                    sa = same_name[0] if len(same_name) == 1 else None
                 if not sa:
                     # Create as WEEKLY source sous-activité under matching activity
                     parent_act = act_by_code.get(current_act_code) if current_act_code else None
-                    if parent_act and not dry_run:
+                    if parent_act:
                         responsible = safe_str(row[COL_RESPONSABLE])
                         intervenants = safe_str(row[COL_INTERVENANTS])
                         date_start = parse_date(row[COL_ECHEANCE_DEBUT])
@@ -277,17 +286,16 @@ class Command(BaseCommand):
                                 'date_end': date_end,
                             },
                         )
-                        sa_by_name[sa_key] = sa
+                        sa_by_key[(current_act_code, sa_key)] = sa
                         stats['created_as_weekly'] += 1
                     else:
                         stats['unmatched'] += 1
-                        if not parent_act:
-                            self.stdout.write(
-                                self.style.WARNING(
-                                    f"  Row {row_num}: No parent activity "
-                                    f"for code={current_act_code}: {sa_name[:60]}"
-                                )
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"  Row {row_num}: No parent activity "
+                                f"for code={current_act_code}: {sa_name[:60]}"
                             )
+                        )
                         stats['rows_processed'] += 1
                         continue
                 else:
@@ -299,21 +307,20 @@ class Command(BaseCommand):
                 responsible = safe_str(row[COL_RESPONSABLE])
                 intervenants = safe_str(row[COL_INTERVENANTS])
 
-                if not dry_run:
-                    update_fields = {}
-                    if date_start:
-                        update_fields['date_start'] = date_start
-                    if date_end:
-                        update_fields['date_end'] = date_end
-                    if responsible:
-                        update_fields['responsible'] = responsible
-                    if intervenants:
-                        update_fields['intervenants'] = intervenants
-                    if update_fields:
-                        for field, value in update_fields.items():
-                            setattr(sa, field, value)
-                        sa.save()
-                        stats['dates_updated'] += 1
+                update_fields = {}
+                if date_start:
+                    update_fields['date_start'] = date_start
+                if date_end:
+                    update_fields['date_end'] = date_end
+                if responsible:
+                    update_fields['responsible'] = responsible
+                if intervenants:
+                    update_fields['intervenants'] = intervenants
+                if update_fields:
+                    for field, value in update_fields.items():
+                        setattr(sa, field, value)
+                    sa.save()
+                    stats['dates_updated'] += 1
 
                 # Create weekly entries
                 for week in weeks:
@@ -334,28 +341,27 @@ class Command(BaseCommand):
                     if not etat_val and not plan_val:
                         continue
 
-                    if dry_run:
-                        self.stdout.write(
-                            f"    [DRY RUN] Week {week['week_start']}: "
-                            f"etat={etat_val[:40]}, plan={plan_val[:40]}"
-                        )
-                    else:
-                        WeeklyPlanEntry.objects.update_or_create(
-                            sous_activite=sa,
-                            week_start=week['week_start'],
-                            defaults={
-                                'week_end': week['week_end'],
-                                'status_description': etat_val,
-                                'planned_description': plan_val,
-                                'responsible': responsible or sa.responsible,
-                                'intervenants': (
-                                    intervenants or sa.intervenants
-                                ),
-                            },
-                        )
+                    WeeklyPlanEntry.objects.update_or_create(
+                        sous_activite=sa,
+                        week_start=week['week_start'],
+                        defaults={
+                            'week_end': week['week_end'],
+                            'status_description': etat_val,
+                            'planned_description': plan_val,
+                            'responsible': responsible or sa.responsible,
+                            'intervenants': (
+                                intervenants or sa.intervenants
+                            ),
+                        },
+                    )
                     stats['entries_created'] += 1
 
                 stats['rows_processed'] += 1
+
+            # A dry run performs the whole import and rolls it back, so its
+            # summary is the one the real run prints.
+            if dry_run:
+                transaction.set_rollback(True)
 
         # Report
         self.stdout.write("")
