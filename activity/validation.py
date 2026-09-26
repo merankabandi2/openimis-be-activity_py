@@ -10,6 +10,11 @@ from activity.models import ActivityStatus
 _TWO_DP = Decimal('0.01')
 
 
+def sous_activite_label(sous_activite):
+    """Code of a sous-activite, or its name when the code is blank."""
+    return sous_activite.code or sous_activite.name
+
+
 def validate_budget_consistency(sous_activite):
     """Validate that quarterly budgets sum to the total budget.
 
@@ -26,7 +31,7 @@ def validate_budget_consistency(sous_activite):
     if quarterly_sum != Decimal(sous_activite.budget_total).quantize(_TWO_DP):
         return (
             f"Quarterly budgets ({quarterly_sum}) do not sum to total "
-            f"({sous_activite.budget_total}) for {sous_activite.code}"
+            f"({sous_activite.budget_total}) for {sous_activite_label(sous_activite)}"
         )
     return None
 
@@ -39,7 +44,7 @@ def validate_funding_allocation(sous_activite):
     if total_funding > sous_activite.budget_total:
         return (
             f"Total funding ({total_funding}) exceeds budget total "
-            f"({sous_activite.budget_total}) for {sous_activite.code}"
+            f"({sous_activite.budget_total}) for {sous_activite_label(sous_activite)}"
         )
     return None
 
@@ -67,7 +72,7 @@ def validate_transition_preconditions(activite, to_status):
         for sa in sous_activites:
             if not sa.executions.exists():
                 errors.append(
-                    f"Sous-activite {sa.code} has no execution data. "
+                    f"Sous-activite {sous_activite_label(sa)} has no execution data. "
                     f"Consider reporting before closing."
                 )
 
