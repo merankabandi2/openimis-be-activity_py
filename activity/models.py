@@ -381,9 +381,9 @@ class QuarterlyExecution(models.Model):
     budget_decaisse = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     resultats_attendus = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     resultats_realises = models.DecimalField(max_digits=15, decimal_places=2, default=0)
-    taux_engagement = models.DecimalField(max_digits=5, decimal_places=2, default=0)
-    taux_decaissement = models.DecimalField(max_digits=5, decimal_places=2, default=0)
-    taux_realisation = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    taux_engagement = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    taux_decaissement = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    taux_realisation = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     observations = models.TextField(blank=True, default="")
     reported_by = models.ForeignKey(
         User, on_delete=models.SET_NULL,

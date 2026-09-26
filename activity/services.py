@@ -8,6 +8,14 @@ from activity.models import (
 logger = logging.getLogger(__name__)
 
 
+def _rate_limit(field_name):
+    """10 ** integer digits of the QuarterlyExecution rate column: a value
+    rounding to it or beyond does not fit."""
+    from decimal import Decimal
+    field = QuarterlyExecution._meta.get_field(field_name)
+    return Decimal(10) ** (field.max_digits - field.decimal_places)
+
+
 class ActivityLifecycleService:
     """Service for managing activity status transitions."""
 
@@ -113,6 +121,17 @@ class QuarterlyExecutionService:
             taux_decaissement = (budget_decaisse / budget_prevu) * 100
         if resultats_attendus:
             taux_realisation = (resultats_realises / resultats_attendus) * 100
+
+        for name, value in (('taux_engagement', taux_engagement),
+                            ('taux_decaissement', taux_decaissement),
+                            ('taux_realisation', taux_realisation)):
+            limit = _rate_limit(name)
+            if abs(value) >= limit - Decimal('0.005'):
+                raise ValueError(
+                    f"{name} of {value:.2f} % is out of range: a rate must stay "
+                    f"below {limit} %. Check the reported amounts against the "
+                    f"planned values of T{quarter}."
+                )
 
         execution, created = QuarterlyExecution.objects.update_or_create(
             sous_activite=sous_activite,
