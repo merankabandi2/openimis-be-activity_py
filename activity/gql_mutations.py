@@ -26,6 +26,32 @@ from activity.validation import (
 )
 
 
+class ActivityBaseMutation(BaseMutation):
+    """BaseMutation whose refusal detail is the text of a ValidationError:
+    str() of a ValidationError is the repr of its message list, so the
+    detail is built from exc.messages instead. Other exceptions are reported
+    as BaseMutation reports them."""
+
+    class Meta:
+        abstract = True
+
+    @classmethod
+    def async_mutate(cls, user, **data):
+        try:
+            cls._validate_mutation(user, **data)
+            return cls._mutate(user, **data)
+        except ValidationError as exc:
+            return [{
+                "message": "Failed to process {} mutation".format(cls._mutation_class),
+                "detail": "; ".join(exc.messages),
+            }]
+        except Exception as exc:
+            return [{
+                "message": "Failed to process {} mutation".format(cls._mutation_class),
+                "detail": str(exc),
+            }]
+
+
 def get_activity_config():
     """Get the ActivityConfig instance"""
     return apps.get_app_config('activity')
@@ -87,7 +113,7 @@ class DeletePTBAInputType(OpenIMISMutation.Input):
     ids = graphene.List(graphene.UUID, required=True)
 
 
-class CreatePTBAMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
+class CreatePTBAMutation(BaseHistoryModelCreateMutationMixin, ActivityBaseMutation):
     _mutation_class = "CreatePTBAMutation"
     _mutation_module = ActivityConfig.name
     _model = PTBA
@@ -124,7 +150,7 @@ class CreatePTBAMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
         pass
 
 
-class UpdatePTBAMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
+class UpdatePTBAMutation(BaseHistoryModelUpdateMutationMixin, ActivityBaseMutation):
     _mutation_class = "UpdatePTBAMutation"
     _mutation_module = ActivityConfig.name
     _model = PTBA
@@ -160,7 +186,7 @@ class UpdatePTBAMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
         pass
 
 
-class DeletePTBAMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
+class DeletePTBAMutation(BaseHistoryModelDeleteMutationMixin, ActivityBaseMutation):
     _mutation_class = "DeletePTBAMutation"
     _mutation_module = ActivityConfig.name
     _model = PTBA
@@ -204,7 +230,7 @@ class DeleteComposanteInputType(OpenIMISMutation.Input):
     ids = graphene.List(graphene.UUID, required=True)
 
 
-class CreateComposanteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
+class CreateComposanteMutation(BaseHistoryModelCreateMutationMixin, ActivityBaseMutation):
     _mutation_class = "CreateComposanteMutation"
     _mutation_module = ActivityConfig.name
     _model = Composante
@@ -231,7 +257,7 @@ class CreateComposanteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation
         pass
 
 
-class UpdateComposanteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
+class UpdateComposanteMutation(BaseHistoryModelUpdateMutationMixin, ActivityBaseMutation):
     _mutation_class = "UpdateComposanteMutation"
     _mutation_module = ActivityConfig.name
     _model = Composante
@@ -257,7 +283,7 @@ class UpdateComposanteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation
         pass
 
 
-class DeleteComposanteMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
+class DeleteComposanteMutation(BaseHistoryModelDeleteMutationMixin, ActivityBaseMutation):
     _mutation_class = "DeleteComposanteMutation"
     _mutation_module = ActivityConfig.name
     _model = Composante
@@ -301,7 +327,7 @@ class DeleteSousComposanteInputType(OpenIMISMutation.Input):
     ids = graphene.List(graphene.UUID, required=True)
 
 
-class CreateSousComposanteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
+class CreateSousComposanteMutation(BaseHistoryModelCreateMutationMixin, ActivityBaseMutation):
     _mutation_class = "CreateSousComposanteMutation"
     _mutation_module = ActivityConfig.name
     _model = SousComposante
@@ -328,7 +354,7 @@ class CreateSousComposanteMutation(BaseHistoryModelCreateMutationMixin, BaseMuta
         pass
 
 
-class UpdateSousComposanteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
+class UpdateSousComposanteMutation(BaseHistoryModelUpdateMutationMixin, ActivityBaseMutation):
     _mutation_class = "UpdateSousComposanteMutation"
     _mutation_module = ActivityConfig.name
     _model = SousComposante
@@ -355,7 +381,7 @@ class UpdateSousComposanteMutation(BaseHistoryModelUpdateMutationMixin, BaseMuta
         pass
 
 
-class DeleteSousComposanteMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
+class DeleteSousComposanteMutation(BaseHistoryModelDeleteMutationMixin, ActivityBaseMutation):
     _mutation_class = "DeleteSousComposanteMutation"
     _mutation_module = ActivityConfig.name
     _model = SousComposante
@@ -408,7 +434,7 @@ class DeleteActiviteInputType(OpenIMISMutation.Input):
     ids = graphene.List(graphene.UUID, required=True)
 
 
-class CreateActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
+class CreateActiviteMutation(BaseHistoryModelCreateMutationMixin, ActivityBaseMutation):
     _mutation_class = "CreateActiviteMutation"
     _mutation_module = ActivityConfig.name
     _model = Activite
@@ -444,7 +470,7 @@ class CreateActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
         pass
 
 
-class UpdateActiviteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
+class UpdateActiviteMutation(BaseHistoryModelUpdateMutationMixin, ActivityBaseMutation):
     _mutation_class = "UpdateActiviteMutation"
     _mutation_module = ActivityConfig.name
     _model = Activite
@@ -478,7 +504,7 @@ class UpdateActiviteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
         pass
 
 
-class DeleteActiviteMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
+class DeleteActiviteMutation(BaseHistoryModelDeleteMutationMixin, ActivityBaseMutation):
     _mutation_class = "DeleteActiviteMutation"
     _mutation_module = ActivityConfig.name
     _model = Activite
@@ -556,7 +582,7 @@ class DeleteSousActiviteInputType(OpenIMISMutation.Input):
     ids = graphene.List(graphene.UUID, required=True)
 
 
-class CreateSousActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
+class CreateSousActiviteMutation(BaseHistoryModelCreateMutationMixin, ActivityBaseMutation):
     _mutation_class = "CreateSousActiviteMutation"
     _mutation_module = ActivityConfig.name
     _model = SousActivite
@@ -614,7 +640,7 @@ class CreateSousActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutati
         pass
 
 
-class UpdateSousActiviteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
+class UpdateSousActiviteMutation(BaseHistoryModelUpdateMutationMixin, ActivityBaseMutation):
     _mutation_class = "UpdateSousActiviteMutation"
     _mutation_module = ActivityConfig.name
     _model = SousActivite
@@ -657,7 +683,7 @@ class UpdateSousActiviteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutati
         pass
 
 
-class DeleteSousActiviteMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
+class DeleteSousActiviteMutation(BaseHistoryModelDeleteMutationMixin, ActivityBaseMutation):
     _mutation_class = "DeleteSousActiviteMutation"
     _mutation_module = ActivityConfig.name
     _model = SousActivite
@@ -698,7 +724,7 @@ class UpdateFundingSourceInputType(CreateFundingSourceInputType):
     id = graphene.UUID(required=True)
 
 
-class CreateFundingSourceMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
+class CreateFundingSourceMutation(BaseHistoryModelCreateMutationMixin, ActivityBaseMutation):
     _mutation_class = "CreateFundingSourceMutation"
     _mutation_module = ActivityConfig.name
     _model = FundingSource
@@ -723,7 +749,7 @@ class CreateFundingSourceMutation(BaseHistoryModelCreateMutationMixin, BaseMutat
         pass
 
 
-class UpdateFundingSourceMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
+class UpdateFundingSourceMutation(BaseHistoryModelUpdateMutationMixin, ActivityBaseMutation):
     _mutation_class = "UpdateFundingSourceMutation"
     _mutation_module = ActivityConfig.name
     _model = FundingSource
@@ -754,7 +780,7 @@ class AllocateFundingInputType(OpenIMISMutation.Input):
     amount = graphene.Decimal(required=True)
 
 
-class AllocateFundingMutation(BaseMutation):
+class AllocateFundingMutation(ActivityBaseMutation):
     _mutation_class = "AllocateFundingMutation"
     _mutation_module = ActivityConfig.name
 
@@ -790,7 +816,7 @@ class DeallocateFundingInputType(OpenIMISMutation.Input):
     ids = graphene.List(graphene.UUID, required=True)
 
 
-class DeallocateFundingMutation(BaseMutation):
+class DeallocateFundingMutation(ActivityBaseMutation):
     _mutation_class = "DeallocateFundingMutation"
     _mutation_module = ActivityConfig.name
 
@@ -816,7 +842,7 @@ class DeleteFundingSourceInputType(OpenIMISMutation.Input):
     ids = graphene.List(graphene.UUID, required=True)
 
 
-class DeleteFundingSourceMutation(BaseMutation):
+class DeleteFundingSourceMutation(ActivityBaseMutation):
     _mutation_class = "DeleteFundingSourceMutation"
     _mutation_module = ActivityConfig.name
 
@@ -855,7 +881,7 @@ class TransitionActivityInputType(OpenIMISMutation.Input):
     comment = graphene.String(required=False)
 
 
-class TransitionActivityMutation(BaseMutation):
+class TransitionActivityMutation(ActivityBaseMutation):
     _mutation_class = "TransitionActivityMutation"
     _mutation_module = ActivityConfig.name
 
@@ -931,7 +957,7 @@ class ReportQuarterlyExecutionInputType(OpenIMISMutation.Input):
     observations = graphene.String(required=False)
 
 
-class ReportQuarterlyExecutionMutation(BaseMutation):
+class ReportQuarterlyExecutionMutation(ActivityBaseMutation):
     _mutation_class = "ReportQuarterlyExecutionMutation"
     _mutation_module = ActivityConfig.name
 
@@ -968,7 +994,7 @@ class LinkActivityToIndicatorInputType(OpenIMISMutation.Input):
     indicator_id = graphene.Int(required=True)
 
 
-class LinkActivityToIndicatorMutation(BaseMutation):
+class LinkActivityToIndicatorMutation(ActivityBaseMutation):
     _mutation_class = "LinkActivityToIndicatorMutation"
     _mutation_module = ActivityConfig.name
 
@@ -1007,7 +1033,7 @@ class UnlinkActivityFromIndicatorInputType(OpenIMISMutation.Input):
     indicator_id = graphene.Int(required=True)
 
 
-class UnlinkActivityFromIndicatorMutation(BaseMutation):
+class UnlinkActivityFromIndicatorMutation(ActivityBaseMutation):
     _mutation_class = "UnlinkActivityFromIndicatorMutation"
     _mutation_module = ActivityConfig.name
 
@@ -1065,7 +1091,7 @@ class DeleteWeeklyPlanEntryInputType(OpenIMISMutation.Input):
     ids = graphene.List(graphene.UUID, required=True)
 
 
-class CreateWeeklyPlanEntryMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
+class CreateWeeklyPlanEntryMutation(BaseHistoryModelCreateMutationMixin, ActivityBaseMutation):
     _mutation_class = "CreateWeeklyPlanEntryMutation"
     _mutation_module = ActivityConfig.name
     _model = WeeklyPlanEntry
@@ -1101,7 +1127,7 @@ class CreateWeeklyPlanEntryMutation(BaseHistoryModelCreateMutationMixin, BaseMut
         pass
 
 
-class UpdateWeeklyPlanEntryMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
+class UpdateWeeklyPlanEntryMutation(BaseHistoryModelUpdateMutationMixin, ActivityBaseMutation):
     _mutation_class = "UpdateWeeklyPlanEntryMutation"
     _mutation_module = ActivityConfig.name
     _model = WeeklyPlanEntry
@@ -1139,7 +1165,7 @@ class UpdateWeeklyPlanEntryMutation(BaseHistoryModelUpdateMutationMixin, BaseMut
         pass
 
 
-class DeleteWeeklyPlanEntryMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
+class DeleteWeeklyPlanEntryMutation(BaseHistoryModelDeleteMutationMixin, ActivityBaseMutation):
     _mutation_class = "DeleteWeeklyPlanEntryMutation"
     _mutation_module = ActivityConfig.name
     _model = WeeklyPlanEntry
@@ -1175,7 +1201,7 @@ class AllocateFundingRevisedInputType(OpenIMISMutation.Input):
     amount_revised = graphene.Decimal(required=False)
 
 
-class AllocateFundingRevisedMutation(BaseMutation):
+class AllocateFundingRevisedMutation(ActivityBaseMutation):
     _mutation_class = "AllocateFundingRevisedMutation"
     _mutation_module = ActivityConfig.name
 
@@ -1219,7 +1245,7 @@ class ApprovePTBAInputType(OpenIMISMutation.Input):
     comment = graphene.String(required=False)
 
 
-class ApprovePTBAMutation(BaseMutation):
+class ApprovePTBAMutation(ActivityBaseMutation):
     """Transition PTBA from DRAFT to APPROVED."""
     _mutation_class = "ApprovePTBAMutation"
     _mutation_module = ActivityConfig.name
@@ -1253,7 +1279,7 @@ class ClosePTBAInputType(OpenIMISMutation.Input):
     comment = graphene.String(required=False)
 
 
-class ClosePTBAMutation(BaseMutation):
+class ClosePTBAMutation(ActivityBaseMutation):
     """Transition PTBA from ACTIVE to CLOSED."""
     _mutation_class = "ClosePTBAMutation"
     _mutation_module = ActivityConfig.name
@@ -1312,7 +1338,7 @@ class TransitionPTBAInputType(OpenIMISMutation.Input):
     comment = graphene.String(required=False)
 
 
-class TransitionPTBAMutation(BaseMutation):
+class TransitionPTBAMutation(ActivityBaseMutation):
     """Transition a PTBA through its state machine (DRAFT/APPROVED/ACTIVE/CLOSED)."""
     _mutation_class = "TransitionPTBAMutation"
     _mutation_module = ActivityConfig.name
@@ -1365,7 +1391,7 @@ class BeginRevisionInputType(OpenIMISMutation.Input):
     sous_activite_id = graphene.UUID(required=True)
 
 
-class BeginRevisionMutation(BaseMutation):
+class BeginRevisionMutation(ActivityBaseMutation):
     """Begin a revision: snapshot current values into *_initial fields."""
     _mutation_class = "BeginRevisionMutation"
     _mutation_module = ActivityConfig.name
@@ -1403,7 +1429,7 @@ class ApproveRevisionInputType(OpenIMISMutation.Input):
     comment = graphene.String(required=False)
 
 
-class ApproveRevisionMutation(BaseMutation):
+class ApproveRevisionMutation(ActivityBaseMutation):
     """Approve a revision: copy current values to *_revised fields."""
     _mutation_class = "ApproveRevisionMutation"
     _mutation_module = ActivityConfig.name
@@ -1443,7 +1469,7 @@ class RejectRevisionInputType(OpenIMISMutation.Input):
     reason = graphene.String(required=False)
 
 
-class RejectRevisionMutation(BaseMutation):
+class RejectRevisionMutation(ActivityBaseMutation):
     """Reject a revision: restore *_initial values back to current."""
     _mutation_class = "RejectRevisionMutation"
     _mutation_module = ActivityConfig.name
