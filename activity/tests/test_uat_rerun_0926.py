@@ -1,20 +1,16 @@
-"""UAT activity re-run 2026-09-26: ACT-B-R1 (PTBA rights granted to no role),
-ACT-B-R3 (activities of a CLOSED PTBA stay editable), ACT-S7 (execution rate
-of 1000 % or more overflows the rate columns)."""
+"""UAT activity re-run 2026-09-26: ACT-B-R3 (activities of a CLOSED PTBA stay
+editable), ACT-S7 (execution rate of 1000 % or more overflows the rate
+columns)."""
 import datetime
-import io
 import uuid
 from decimal import Decimal
 
-from django.core.cache import cache
-from django.core.management import call_command
-from django.core.management.base import CommandError
 from django.test import TestCase
 
-from core.models import Role, RoleRight, User
+from core.models import Role, RoleRight
 from core.test_helpers import create_test_interactive_user
 from activity.gql_mutations import (
-    CreatePTBAMutation, CreateSousActiviteMutation, DeleteActiviteMutation,
+    CreateSousActiviteMutation, DeleteActiviteMutation,
     DeleteSousActiviteMutation, ReportQuarterlyExecutionMutation,
     UpdateActiviteMutation, UpdateSousActiviteMutation,
 )
@@ -24,7 +20,6 @@ from activity.models import (
 )
 from activity.services import QuarterlyExecutionService
 
-LEGACY = [170001, 170002, 170003, 170004]
 PTBA_RIGHTS = [170014, 170015, 170016, 170017]
 ACTIVITY_RIGHTS = list(range(170005, 170014))
 
@@ -44,11 +39,6 @@ def make_user(rights=None, role=None):
     role = role or make_role(rights)
     return create_test_interactive_user(
         username=f'uat_r0926_{uuid.uuid4().hex[:8]}', roles=[role.id])
-
-
-def live_rights(role):
-    return sorted(RoleRight.objects.filter(role=role, validity_to__isnull=True)
-                  .values_list('right_id', flat=True))
 
 
 def error_text(result):
@@ -72,95 +62,6 @@ def make_hierarchy(code, status):
     act = Activite.objects.create(sous_composante=sc, code='KA1', name='activity')
     sa = SousActivite.objects.create(activite=act, code='KA1.1', name='sub-activity')
     return ptba, sc, act, sa
-
-
-class GrantPtbaRightsTests(TestCase):
-    """ACT-B-R1: grant_ptba_rights carries the legacy PTBA codes over to the
-    PTBA rights 170014-170017 for activity roles only."""
-
-    def setUp(self):
-        self.gestion = make_role(LEGACY + ACTIVITY_RIGHTS)
-        self.reader = make_role([170001, 170005, 170012])
-        self.no_search = make_role([170002, 170003, 170004] + ACTIVITY_RIGHTS)
-        self.beneficiary = make_role(LEGACY)
-        self.activity_only = make_role([170005])
-        self.already = make_role([170001, 170005, 170014])
-
-    def _run(self, *args):
-        out = io.StringIO()
-        call_command('grant_ptba_rights', *args, stdout=out)
-        return out.getvalue()
-
-    def test_a_legacy_activity_role_can_manage_ptbas_after_apply(self):
-        user = make_user(role=self.gestion)
-        create = dict(name='x', fiscal_year_start=datetime.date(2026, 1, 1),
-                      fiscal_year_end=datetime.date(2026, 12, 31))
-        self.assertFalse(user.has_perms(['170014']))
-        self.assertIsNotNone(CreatePTBAMutation.async_mutate(user, code='R1-BEFORE', **create))
-        self.assertFalse(PTBA.objects.filter(code='R1-BEFORE').exists())
-
-        self._run('--apply')
-
-        user = User.objects.get(id=user.id)
-        self.assertTrue(user.has_perms(['170014']))
-        result = CreatePTBAMutation.async_mutate(user, code='R1-AFTER', **create)
-        self.assertIsNone(result, error_text(result))
-        self.assertTrue(PTBA.objects.filter(code='R1-AFTER').exists())
-
-    def test_apply_maps_each_legacy_code_to_its_ptba_right(self):
-        self._run('--apply')
-        self.assertEqual(live_rights(self.gestion), sorted(LEGACY + ACTIVITY_RIGHTS + PTBA_RIGHTS))
-        self.assertEqual(live_rights(self.reader), [170001, 170005, 170012, 170014])
-        self.assertEqual(live_rights(self.no_search),
-                         sorted([170002, 170003, 170004] + ACTIVITY_RIGHTS + [170015, 170016, 170017]))
-
-    def test_roles_without_an_activity_right_are_untouched(self):
-        self._run('--apply')
-        self.assertEqual(live_rights(self.beneficiary), LEGACY)
-        self.assertEqual(live_rights(self.activity_only), [170005])
-
-    def test_legacy_rights_are_kept(self):
-        self._run('--apply')
-        self.assertTrue(set(LEGACY) <= set(live_rights(self.gestion)))
-
-    def test_dry_run_is_the_default_and_writes_nothing(self):
-        before = RoleRight.objects.count()
-        output = self._run()
-        self.assertEqual(RoleRight.objects.count(), before)
-        self.assertIn('DRY RUN', output)
-        self.assertIn(f'role {self.reader.id}, legacy [170001], to grant [170014], '
-                      f'already held []', output)
-        self.assertIn(f'role {self.already.id}, legacy [170001], to grant [], '
-                      f'already held [170014]', output)
-
-    def test_apply_and_dry_run_exclude_each_other(self):
-        with self.assertRaises(CommandError):
-            self._run('--apply', '--dry-run')
-
-    def test_second_run_creates_nothing(self):
-        self._run('--apply')
-        count = RoleRight.objects.count()
-        output = self._run('--apply')
-        self.assertEqual(RoleRight.objects.count(), count)
-        self.assertIn('rights created 0', output)
-
-    def test_a_closed_role_is_skipped(self):
-        self.reader.validity_to = datetime.datetime.now()
-        self.reader.save()
-        self._run('--apply')
-        self.assertNotIn(170014, live_rights(self.reader))
-
-    def test_cached_rights_of_a_logged_in_user_are_purged(self):
-        user = make_user(role=self.reader)
-        i_user = user.i_user
-        self.assertNotIn(170014, i_user.rights)
-        self.assertIsNotNone(cache.get(f'rights_{i_user.id}'))
-
-        output = self._run('--apply')
-
-        self.assertIsNone(cache.get(f'rights_{i_user.id}'))
-        self.assertIn(170014, i_user.rights)
-        self.assertIn('rights cache purged for 1 user(s)', output)
 
 
 class ClosedPtbaActivityTests(TestCase):

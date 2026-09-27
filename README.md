@@ -22,8 +22,8 @@ This module provides PTBA (Plan de Travail et Budget Annuel) management for the 
 | 170013 | Funding management |
 
 170001-170004 are the social_protection beneficiary rights and give no PTBA
-access. `grant_ptba_rights` gives the PTBA rights to the roles that hold
-170001-170004 together with at least one activity right (170001 gives
+access. The `grant_ptba_rights` command of the merankabandi module gives
+every live role holding 170001-170004 the matching PTBA right (170001 gives
 170014, 170002 gives 170015, 170003 gives 170016, 170004 gives 170017). It
 only adds rights and purges the rights cache of the users of changed roles:
 
