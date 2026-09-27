@@ -21,21 +21,14 @@ from activity.models import (
 )
 from activity.quarters import QUARTERLY_BUDGET_FIELDS, QUARTERLY_QUANTITY_FIELDS, quarterly_split
 from activity.services import ActivityLifecycleService, QuarterlyExecutionService
-from activity.validation import validate_budget_consistency, validate_funding_allocation
+from activity.validation import (
+    ensure_ptba_open, validate_budget_consistency, validate_funding_allocation,
+)
 
 
 def get_activity_config():
     """Get the ActivityConfig instance"""
     return apps.get_app_config('activity')
-
-
-def _ensure_ptba_open(ptba):
-    """A CLOSED PTBA and its composantes, sous-composantes, activites and
-    sous-activites are read-only."""
-    if ptba.status == PTBAStatus.CLOSED:
-        raise ValidationError(
-            _("PTBA %(code)s is closed and can no longer be modified.") % {'code': ptba.code}
-        )
 
 
 def _ptba_of_sous_composante(sous_composante_id):
@@ -46,6 +39,19 @@ def _ptba_of_sous_composante(sous_composante_id):
 def _ptba_of_activite(activite_id):
     return (Activite.objects.select_related('sous_composante__composante__ptba')
             .get(id=activite_id).sous_composante.composante.ptba)
+
+
+def _ptba_of_sous_activite(sous_activite_id):
+    return (SousActivite.objects.select_related('activite__sous_composante__composante__ptba')
+            .get(id=sous_activite_id).activite.sous_composante.composante.ptba)
+
+
+def _ensure_sous_activites_open(queryset):
+    """Checks the PTBA of the sous-activite of every row of `queryset`
+    (funding allocations or weekly entries) before any of them is written."""
+    rows = queryset.select_related('sous_activite__activite__sous_composante__composante__ptba')
+    for row in rows:
+        ensure_ptba_open(row.sous_activite.activite.sous_composante.composante.ptba)
 
 
 def _validate_fiscal_year(start, end):
@@ -134,7 +140,7 @@ class UpdatePTBAMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         ptba = PTBA.objects.get(id=data['id'])
-        _ensure_ptba_open(ptba)
+        ensure_ptba_open(ptba)
         update_data = {k: v for k, v in data.items() if k != 'id' and v is not None}
         # An update may carry the current status; only transitionPtba changes it.
         status = update_data.pop('status', None)
@@ -173,7 +179,7 @@ class DeletePTBAMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
         if ids:
             with transaction.atomic():
                 for ptba in PTBA.objects.filter(id__in=ids):
-                    _ensure_ptba_open(ptba)
+                    ensure_ptba_open(ptba)
                 PTBA.objects.filter(id__in=ids).delete()
 
     class Input(DeletePTBAInputType):
@@ -213,7 +219,7 @@ class CreateComposanteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        _ensure_ptba_open(PTBA.objects.get(id=data['ptba_id']))
+        ensure_ptba_open(PTBA.objects.get(id=data['ptba_id']))
         Composante.objects.create(
             ptba_id=data['ptba_id'],
             code=data['code'],
@@ -241,10 +247,10 @@ class UpdateComposanteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         composante = Composante.objects.get(id=data['id'])
-        _ensure_ptba_open(composante.ptba)
+        ensure_ptba_open(composante.ptba)
         update_data = {k: v for k, v in data.items() if k != 'id' and v is not None}
         if update_data.get('ptba_id'):
-            _ensure_ptba_open(PTBA.objects.get(id=update_data['ptba_id']))
+            ensure_ptba_open(PTBA.objects.get(id=update_data['ptba_id']))
         composante.update(data=update_data)
 
     class Input(UpdateComposanteInputType):
@@ -270,7 +276,7 @@ class DeleteComposanteMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation
         if ids:
             with transaction.atomic():
                 for composante in Composante.objects.filter(id__in=ids).select_related('ptba'):
-                    _ensure_ptba_open(composante.ptba)
+                    ensure_ptba_open(composante.ptba)
                 Composante.objects.filter(id__in=ids).delete()
 
     class Input(DeleteComposanteInputType):
@@ -310,7 +316,7 @@ class CreateSousComposanteMutation(BaseHistoryModelCreateMutationMixin, BaseMuta
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        _ensure_ptba_open(Composante.objects.select_related('ptba').get(id=data['composante_id']).ptba)
+        ensure_ptba_open(Composante.objects.select_related('ptba').get(id=data['composante_id']).ptba)
         SousComposante.objects.create(
             composante_id=data['composante_id'],
             code=data['code'],
@@ -338,10 +344,10 @@ class UpdateSousComposanteMutation(BaseHistoryModelUpdateMutationMixin, BaseMuta
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         sc = SousComposante.objects.select_related('composante__ptba').get(id=data['id'])
-        _ensure_ptba_open(sc.composante.ptba)
+        ensure_ptba_open(sc.composante.ptba)
         update_data = {k: v for k, v in data.items() if k != 'id' and v is not None}
         if update_data.get('composante_id'):
-            _ensure_ptba_open(
+            ensure_ptba_open(
                 Composante.objects.select_related('ptba').get(id=update_data['composante_id']).ptba)
         sc.update(data=update_data)
 
@@ -368,7 +374,7 @@ class DeleteSousComposanteMutation(BaseHistoryModelDeleteMutationMixin, BaseMuta
         if ids:
             with transaction.atomic():
                 for sc in SousComposante.objects.filter(id__in=ids).select_related('composante__ptba'):
-                    _ensure_ptba_open(sc.composante.ptba)
+                    ensure_ptba_open(sc.composante.ptba)
                 SousComposante.objects.filter(id__in=ids).delete()
 
     class Input(DeleteSousComposanteInputType):
@@ -417,7 +423,7 @@ class CreateActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        _ensure_ptba_open(_ptba_of_sous_composante(data['sous_composante_id']))
+        ensure_ptba_open(_ptba_of_sous_composante(data['sous_composante_id']))
         Activite.objects.create(
             sous_composante_id=data['sous_composante_id'],
             code=data.get('code', ''),
@@ -459,13 +465,13 @@ class UpdateActiviteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutation):
         data.pop('client_mutation_label', None)
         activite = Activite.objects.select_related(
             'sous_composante__composante__ptba').get(id=data['id'])
-        _ensure_ptba_open(activite.sous_composante.composante.ptba)
+        ensure_ptba_open(activite.sous_composante.composante.ptba)
         update_data = {
             k: v for k, v in data.items()
             if k != 'id' and (v is not None or k in cls.CLEARABLE_FIELDS)
         }
         if 'sous_composante_id' in update_data:
-            _ensure_ptba_open(_ptba_of_sous_composante(update_data['sous_composante_id']))
+            ensure_ptba_open(_ptba_of_sous_composante(update_data['sous_composante_id']))
         activite.update(data=update_data)
 
     class Input(UpdateActiviteInputType):
@@ -493,7 +499,7 @@ class DeleteActiviteMutation(BaseHistoryModelDeleteMutationMixin, BaseMutation):
                 activites = list(Activite.objects.filter(id__in=ids)
                                  .select_related('sous_composante__composante__ptba'))
                 for activite in activites:
-                    _ensure_ptba_open(activite.sous_composante.composante.ptba)
+                    ensure_ptba_open(activite.sous_composante.composante.ptba)
                 for activite in activites:
                     activite.delete()
 
@@ -565,7 +571,7 @@ class CreateSousActiviteMutation(BaseHistoryModelCreateMutationMixin, BaseMutati
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        _ensure_ptba_open(_ptba_of_activite(data['activite_id']))
+        ensure_ptba_open(_ptba_of_activite(data['activite_id']))
         sa = SousActivite(
             activite_id=data['activite_id'],
             code=data.get('code', ''),
@@ -631,13 +637,13 @@ class UpdateSousActiviteMutation(BaseHistoryModelUpdateMutationMixin, BaseMutati
         data.pop('client_mutation_label', None)
         sa = SousActivite.objects.select_related(
             'activite__sous_composante__composante__ptba').get(id=data['id'])
-        _ensure_ptba_open(sa.activite.sous_composante.composante.ptba)
+        ensure_ptba_open(sa.activite.sous_composante.composante.ptba)
         update_data = {
             k: v for k, v in data.items()
             if k != 'id' and (v is not None or k in cls.CLEARABLE_FIELDS)
         }
         if 'activite_id' in update_data:
-            _ensure_ptba_open(_ptba_of_activite(update_data['activite_id']))
+            ensure_ptba_open(_ptba_of_activite(update_data['activite_id']))
         sa.update(data=update_data, save=False)
         # An update that sets budget fields must leave the MERGED line
         # consistent; one that sets none leaves the stored budgets as they are.
@@ -672,7 +678,7 @@ class DeleteSousActiviteMutation(BaseHistoryModelDeleteMutationMixin, BaseMutati
                 lines = list(SousActivite.objects.filter(id__in=ids)
                              .select_related('activite__sous_composante__composante__ptba'))
                 for sa in lines:
-                    _ensure_ptba_open(sa.activite.sous_composante.composante.ptba)
+                    ensure_ptba_open(sa.activite.sous_composante.composante.ptba)
                 for sa in lines:
                     sa.delete()
 
@@ -764,6 +770,7 @@ class AllocateFundingMutation(BaseMutation):
         data.pop('client_mutation_label', None)
         # atomic: the funding-vs-budget invariant is checked on post-write
         # state, so an over-allocation must roll the write back.
+        ensure_ptba_open(_ptba_of_sous_activite(data['sous_activite_id']))
         with transaction.atomic():
             SousActiviteFunding.objects.update_or_create(
                 sous_activite_id=data['sous_activite_id'],
@@ -797,7 +804,9 @@ class DeallocateFundingMutation(BaseMutation):
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        SousActiviteFunding.objects.filter(id__in=data['ids']).delete()
+        allocations = SousActiviteFunding.objects.filter(id__in=data['ids'])
+        _ensure_sous_activites_open(allocations)
+        allocations.delete()
 
     class Input(DeallocateFundingInputType):
         pass
@@ -973,7 +982,9 @@ class LinkActivityToIndicatorMutation(BaseMutation):
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        activite = Activite.objects.get(id=data['activite_id'])
+        activite = Activite.objects.select_related(
+            'sous_composante__composante__ptba').get(id=data['activite_id'])
+        ensure_ptba_open(activite.sous_composante.composante.ptba)
         if not hasattr(activite, 'indicators'):
             raise ValidationError(
                 _("merankabandi module not installed; cannot link indicators")
@@ -1010,7 +1021,9 @@ class UnlinkActivityFromIndicatorMutation(BaseMutation):
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
-        activite = Activite.objects.get(id=data['activite_id'])
+        activite = Activite.objects.select_related(
+            'sous_composante__composante__ptba').get(id=data['activite_id'])
+        ensure_ptba_open(activite.sous_composante.composante.ptba)
         if not hasattr(activite, 'indicators'):
             raise ValidationError(
                 _("merankabandi module not installed; cannot unlink indicators")
@@ -1067,6 +1080,7 @@ class CreateWeeklyPlanEntryMutation(BaseHistoryModelCreateMutationMixin, BaseMut
     def _mutate(cls, user, **data):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
+        ensure_ptba_open(_ptba_of_sous_activite(data['sous_activite_id']))
         entry = WeeklyPlanEntry(
             sous_activite_id=data['sous_activite_id'],
             week_start=data['week_start'],
@@ -1108,10 +1122,13 @@ class UpdateWeeklyPlanEntryMutation(BaseHistoryModelUpdateMutationMixin, BaseMut
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         entry = WeeklyPlanEntry.objects.get(id=data['id'])
+        ensure_ptba_open(_ptba_of_sous_activite(entry.sous_activite_id))
         update_data = {
             k: v for k, v in data.items()
             if k != 'id' and (v is not None or k in cls.CLEARABLE_FIELDS)
         }
+        if update_data.get('sous_activite_id'):
+            ensure_ptba_open(_ptba_of_sous_activite(update_data['sous_activite_id']))
         # Enforce model invariants on the merged state before saving.
         # created_by is set by the system (null for imported entries).
         entry.update(data=update_data, save=False)
@@ -1139,6 +1156,7 @@ class DeleteWeeklyPlanEntryMutation(BaseHistoryModelDeleteMutationMixin, BaseMut
         data.pop('client_mutation_label', None)
         ids = data.get('ids')
         if ids:
+            _ensure_sous_activites_open(WeeklyPlanEntry.objects.filter(id__in=ids))
             with transaction.atomic():
                 for item_id in ids:
                     WeeklyPlanEntry.objects.filter(id=item_id).delete()
@@ -1178,6 +1196,7 @@ class AllocateFundingRevisedMutation(BaseMutation):
             defaults['amount_revised'] = data['amount_revised']
         # atomic: the funding-vs-budget invariant is checked on post-write
         # state, so an over-allocation must roll the write back.
+        ensure_ptba_open(_ptba_of_sous_activite(data['sous_activite_id']))
         with transaction.atomic():
             SousActiviteFunding.objects.update_or_create(
                 sous_activite_id=data['sous_activite_id'],
@@ -1362,6 +1381,7 @@ class BeginRevisionMutation(BaseMutation):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         sa = SousActivite.objects.get(id=data['sous_activite_id'])
+        ensure_ptba_open(sa.activite.sous_composante.composante.ptba)
         sa.quantity_initial = sa.quantity_total
         sa.unit_cost_initial = sa.unit_cost
         sa.budget_initial = sa.budget_total
@@ -1399,6 +1419,7 @@ class ApproveRevisionMutation(BaseMutation):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         sa = SousActivite.objects.get(id=data['sous_activite_id'])
+        ensure_ptba_open(sa.activite.sous_composante.composante.ptba)
         if sa.revision_status != 'REVISE':
             raise ValidationError(
                 _("SousActivite must be in REVISE status to approve revision. "
@@ -1438,6 +1459,7 @@ class RejectRevisionMutation(BaseMutation):
         data.pop('client_mutation_id', None)
         data.pop('client_mutation_label', None)
         sa = SousActivite.objects.get(id=data['sous_activite_id'])
+        ensure_ptba_open(sa.activite.sous_composante.composante.ptba)
         if sa.revision_status != 'REVISE':
             raise ValidationError(
                 _("SousActivite must be in REVISE status to reject revision. "

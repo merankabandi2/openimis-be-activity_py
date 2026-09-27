@@ -4,6 +4,7 @@ from django.utils import timezone
 from activity.models import (
     ActivityStatus, ActivityStatusTransition, QuarterlyExecution,
 )
+from activity.validation import ensure_ptba_open
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class ActivityLifecycleService:
 
     @classmethod
     def transition(cls, activite, to_status, user, comment=''):
+        ensure_ptba_open(activite.sous_composante.composante.ptba)
         from_status = activite.status
 
         valid_targets = cls.VALID_TRANSITIONS.get(from_status, [])
@@ -97,6 +99,7 @@ class QuarterlyExecutionService:
 
     @classmethod
     def report(cls, sous_activite, quarter, year, user, **data):
+        ensure_ptba_open(sous_activite.activite.sous_composante.composante.ptba)
         if sous_activite.activite.status != ActivityStatus.EN_COURS:
             raise ValueError(
                 "Activity must be EN_COURS to report execution. "
