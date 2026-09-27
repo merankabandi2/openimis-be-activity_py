@@ -4,10 +4,24 @@ Validation rules for the Activity module.
 Budget validation and transition rule enforcement.
 """
 from decimal import Decimal
+from gettext import gettext as _
 
-from activity.models import ActivityStatus
+from django.core.exceptions import ValidationError
+
+from activity.models import ActivityStatus, PTBAStatus
 
 _TWO_DP = Decimal('0.01')
+
+
+def ensure_ptba_open(ptba):
+    """A CLOSED PTBA and everything under it are read-only: composantes,
+    sous-composantes, activites, sous-activites, their lifecycle, execution
+    reports, revisions, funding allocations, indicator links and weekly-plan
+    entries."""
+    if ptba.status == PTBAStatus.CLOSED:
+        raise ValidationError(
+            _("PTBA %(code)s is closed and can no longer be modified.") % {'code': ptba.code}
+        )
 
 
 def sous_activite_label(sous_activite):
