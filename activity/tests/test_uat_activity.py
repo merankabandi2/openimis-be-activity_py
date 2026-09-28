@@ -22,7 +22,7 @@ from activity.models import (
 from activity.services import QuarterlyExecutionService
 from activity.validation import validate_budget_consistency
 
-ALL_RIGHTS = list(range(170005, 170018))
+ALL_RIGHTS = list(range(802005, 802018))
 
 
 def make_user(rights):

@@ -19,8 +19,8 @@ from activity.models import (
 )
 
 BENEFICIARY_RIGHTS = [170001, 170002, 170003, 170004]
-PTBA_RIGHTS = [170014, 170015, 170016, 170017]
-ACTIVITY_SEARCH = [170005]
+PTBA_RIGHTS = [802014, 802015, 802016, 802017]
+ACTIVITY_SEARCH = [802005]
 
 
 def configured_rights(*names):
@@ -69,7 +69,7 @@ def ptba_input(ptba, **overrides):
 
 
 class PtbaRightsTests(TestCase):
-    """ACT-S3: PTBA rights are 170014-170017, distinct from the
+    """ACT-S3: PTBA rights are 802014-802017, distinct from the
     social_protection beneficiary rights 170001-170004."""
 
     @classmethod
@@ -101,7 +101,7 @@ class PtbaRightsTests(TestCase):
     def test_budgeting_an_activity_needs_the_ptba_update_right(self):
         from activity.services import ActivityLifecycleService
         self.assertEqual(
-            ActivityLifecycleService.required_perms('PLANIFIE', 'BUDGETISE'), ['170016'])
+            ActivityLifecycleService.required_perms('PLANIFIE', 'BUDGETISE'), ['802016'])
 
 
 class ListQueryRightsTests(TestCase):

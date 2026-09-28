@@ -24,11 +24,11 @@ from activity.models import (
 from activity.services import ActivityLifecycleService
 
 ROLE_RIGHTS = {
-    'gest': list(range(170005, 170018)) + [160009, 160022],
-    'lect': [170014, 170005, 170012],
-    'saisie': [170014, 170015, 170016, 170005, 170006, 170007],
-    'exec': [170014, 170005, 170009],
-    'appr': [170014, 170005, 170010, 170011],
+    'gest': list(range(802005, 802018)) + [801009, 801022],
+    'lect': [802014, 802005, 802012],
+    'saisie': [802014, 802015, 802016, 802005, 802006, 802007],
+    'exec': [802014, 802005, 802009],
+    'appr': [802014, 802005, 802010, 802011],
 }
 
 
@@ -145,7 +145,7 @@ class UatSectionDTests(TestCase):
 
     # -- D4 ------------------------------------------------------------------
 
-    def test_d4_demarrer_sets_approver_and_notifies_170009_holders_in_app(self):
+    def test_d4_demarrer_sets_approver_and_notifies_802009_holders_in_app(self):
         from notification.models import Notification, NotificationEventType, NotificationTemplate
         from notification.services import RecipientResolver
         et, _ = NotificationEventType.objects.update_or_create(
@@ -165,13 +165,13 @@ class UatSectionDTests(TestCase):
         self.assertEqual(act.approved_by_id, self.users['appr'].id)
         self.assertIsNotNone(act.approved_date)
 
-        holders = {u.id for u in RecipientResolver.by_role(170009)}
+        holders = {u.id for u in RecipientResolver.by_role(802009)}
         self.assertIn(self.users['exec'].id, holders)
         self.assertIn(self.users['gest'].id, holders)
         notifs = Notification.objects.filter(event_type=et, entity_id=act.id)
         channels = set(notifs.values_list('channel', flat=True))
         recipients = set(notifs.values_list('recipient_id', flat=True))
-        print(f'\n[D4] channels={channels} recipients={len(recipients)} holders_170009={len(holders)}'
+        print(f'\n[D4] channels={channels} recipients={len(recipients)} holders_802009={len(holders)}'
               f' entity_url={set(notifs.values_list("entity_url", flat=True))}')
         self.assertEqual(channels, {'in_app'})
         self.assertIn(self.users['exec'].id, recipients)
@@ -222,11 +222,11 @@ class UatSectionDTests(TestCase):
         self.assertEqual(kwargs['event_code'], 'activity.validated')
         self.assertEqual(kwargs['entity_url'], f'/activity/activite/{act.id}')
         sent = {u.id for u in kwargs['recipients']}
-        expected = {u.id for u in RecipientResolver.by_role(170010)} | {self.users['appr'].id}
+        expected = {u.id for u in RecipientResolver.by_role(802010)} | {self.users['appr'].id}
         print(f'\n[D5] event={kwargs["event_code"]} recipients={len(sent)} context={kwargs["context"]}')
         self.assertEqual(sent, expected)
 
-    def test_d5_marquer_realise_refused_without_170009(self):
+    def test_d5_marquer_realise_refused_without_802009(self):
         act = self._activity(ActivityStatus.EN_COURS)
         detail = _error_detail(self._transition('appr', act, ActivityStatus.REALISE))
         print(f'\n[D5-neg] appr detail: {detail}')
@@ -334,13 +334,13 @@ class UatSectionDTests(TestCase):
         self.assertEqual(execution.budget_prevu, Decimal('2000'))
         self.assertEqual(execution.taux_engagement, Decimal('1500.00'))
 
-    def test_d13_report_accepted_with_170009_without_170007(self):
-        self.assertFalse(self.users['exec'].has_perms(['170007']))
+    def test_d13_report_accepted_with_802009_without_802007(self):
+        self.assertFalse(self.users['exec'].has_perms(['802007']))
         act = self._activity(ActivityStatus.EN_COURS)
         self.assertIsNone(self._report('exec', act.sous_activites.get(), budget_engage=Decimal('10')))
         self.assertTrue(QuarterlyExecution.objects.filter(sous_activite__activite=act).exists())
         detail = _error_detail(self._report('saisie', act.sous_activites.get(), budget_engage=Decimal('20')))
-        print(f'\n[D13] saisie (170007 without 170009): {detail}')
+        print(f'\n[D13] saisie (802007 without 802009): {detail}')
         self.assertIn('mutation.authentication_required', detail)
 
     # -- D15 / D16 / D17 / D18 -----------------------------------------------
