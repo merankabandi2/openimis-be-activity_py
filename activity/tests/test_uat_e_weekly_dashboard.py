@@ -20,7 +20,7 @@ from activity.models import (
     FundingSource, SousActiviteFunding, QuarterlyExecution, WeeklyPlanEntry,
 )
 
-ALL_ACTIVITY_RIGHTS = list(range(170005, 170018))
+ALL_ACTIVITY_RIGHTS = list(range(802005, 802018))
 MONDAY = datetime.date(2026, 7, 6)
 
 

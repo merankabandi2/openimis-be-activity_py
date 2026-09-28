@@ -1,5 +1,5 @@
 """UAT row A19 (docs/metier/activites-uat.md): list queries read by an
-authenticated account that holds no activity right (170005-170017)."""
+authenticated account that holds no activity right (802005-802017)."""
 import importlib
 
 from django.conf import settings
@@ -11,7 +11,7 @@ from activity.models import (
     QuarterlyExecution, WeeklyPlanEntry,
 )
 
-ACTIVITY_RIGHTS = set(range(170005, 170018))
+ACTIVITY_RIGHTS = set(range(802005, 802018))
 
 
 def _schema():

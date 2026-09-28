@@ -14,17 +14,17 @@ This module provides PTBA (Plan de Travail et Budget Annuel) management for the 
 
 | Code | Perm (module config) |
 |------|----------------------|
-| 170014-170017 | PTBA search, create, update, delete (`gql_ptba_*_perms`) |
-| 170005-170008 | Activity search, create, update, delete |
-| 170009 / 170010 | Execution report / approve |
-| 170011 | Activity lifecycle transition |
-| 170012 | Dashboard view |
-| 170013 | Funding management |
+| 802014-802017 | PTBA search, create, update, delete (`gql_ptba_*_perms`) |
+| 802005-802008 | Activity search, create, update, delete |
+| 802009 / 802010 | Execution report / approve |
+| 802011 | Activity lifecycle transition |
+| 802012 | Dashboard view |
+| 802013 | Funding management |
 
 170001-170004 are the social_protection beneficiary rights and give no PTBA
 access. The `grant_ptba_rights` command of the merankabandi module gives
 every live role holding 170001-170004 the matching PTBA right (170001 gives
-170014, 170002 gives 170015, 170003 gives 170016, 170004 gives 170017). It
+802014, 170002 gives 802015, 170003 gives 802016, 170004 gives 802017). It
 only adds rights and purges the rights cache of the users of changed roles:
 
 ```bash

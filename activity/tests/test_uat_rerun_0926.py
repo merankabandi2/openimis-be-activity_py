@@ -20,8 +20,8 @@ from activity.models import (
 )
 from activity.services import QuarterlyExecutionService
 
-PTBA_RIGHTS = [170014, 170015, 170016, 170017]
-ACTIVITY_RIGHTS = list(range(170005, 170014))
+PTBA_RIGHTS = [802014, 802015, 802016, 802017]
+ACTIVITY_RIGHTS = list(range(802005, 802014))
 
 
 def make_role(rights):

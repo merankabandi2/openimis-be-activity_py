@@ -29,7 +29,7 @@ from activity.models import (
 )
 from activity.services import QuarterlyExecutionService
 
-ALL_ACTIVITY_RIGHTS = list(range(170005, 170018))
+ALL_ACTIVITY_RIGHTS = list(range(802005, 802018))
 
 
 def _role_with_rights(name, rights):

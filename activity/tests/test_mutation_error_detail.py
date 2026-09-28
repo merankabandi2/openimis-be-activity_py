@@ -25,7 +25,7 @@ from activity.models import (
     FundingSource, SousActiviteFunding, ActivityStatus,
 )
 
-ACTIVITY_RIGHTS = list(range(170005, 170018))
+ACTIVITY_RIGHTS = list(range(802005, 802018))
 
 
 def _user(username):
